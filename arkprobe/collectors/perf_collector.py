@@ -274,7 +274,7 @@ class PerfCollector(BaseCollector):
     ) -> Dict[str, PerfCounter]:
         """Parse perf stat CSV output (-x , format).
 
-        CSV columns: value,,event,time_enabled_ns,pcnt_running,,comment
+        CSV columns: value,,event,stddev%,time_enabled_ns,pcnt_running,,comment
         Compatible with perf 5.10+ (does not require -j JSON support).
         """
         counters: Dict[str, PerfCounter] = {}
@@ -290,8 +290,9 @@ class PerfCollector(BaseCollector):
 
             raw_value = parts[0].strip()
             event_raw = parts[2].strip() if len(parts) > 2 else ""
-            time_enabled = parts[3].strip() if len(parts) > 3 else "0"
-            pcnt_running = parts[4].strip() if len(parts) > 4 else "100.00"
+            # parts[3] = stddev% (skip), parts[4] = time_enabled_ns, parts[5] = pcnt_running
+            time_enabled = parts[4].strip() if len(parts) > 4 else "0"
+            pcnt_running = parts[5].strip() if len(parts) > 5 else "100.00"
 
             if not event_raw or raw_value in ("<not counted>", "<not supported>", ""):
                 continue
