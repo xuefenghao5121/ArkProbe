@@ -1,7 +1,7 @@
 """Linux perf wrapper for ARM PMU event collection on Kunpeng processors.
 
 Supports:
-- perf stat with JSON output and multiplexing correction
+- perf stat with CSV output (-x ,) for broad version compatibility
 - perf record for sampling-based profiling
 - ARM TopDown Level 1 analysis
 - Sequential event group collection to avoid multiplexing
@@ -117,7 +117,7 @@ class PerfCollector(BaseCollector):
         Uses JSON output (-j) and applies multiplexing correction.
         """
         event_str = build_perf_event_string(event_group, self.model.pmu_name)
-        cmd = ["perf", "stat", "-j", "-e", event_str, "-r", str(repeat)]
+        cmd = ["perf", "stat", "-x", ",", "-e", event_str, "-r", str(repeat)]
 
         if cpu_list:
             cmd.extend(["-C", cpu_list])
@@ -135,9 +135,9 @@ class PerfCollector(BaseCollector):
 
         result = run_cmd(cmd, timeout_sec=max((duration_sec or 60) * repeat + 60, 300))
 
-        # perf stat outputs JSON to stderr
+        # perf stat outputs CSV to stderr
         raw_output = result.stderr
-        counters = self._parse_perf_stat_json(raw_output, event_group)
+        counters = self._parse_perf_stat_csv(raw_output, event_group)
 
         # Extract duration from perf stat output
         duration = self._extract_duration(raw_output, duration_sec or 10)
@@ -269,10 +269,71 @@ class PerfCollector(BaseCollector):
     # Internal helpers
     # -----------------------------------------------------------------------
 
+    def _parse_perf_stat_csv(
+        self, output: str, group: EventGroup
+    ) -> Dict[str, PerfCounter]:
+        """Parse perf stat CSV output (-x , format).
+
+        CSV columns: value,,event,time_enabled_ns,pcnt_running,,comment
+        Compatible with perf 5.10+ (does not require -j JSON support).
+        """
+        counters: Dict[str, PerfCounter] = {}
+        event_to_name = {v: k for k, v in group.events.items()}
+
+        for line in output.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+
+            raw_value = parts[0].strip()
+            event_raw = parts[2].strip() if len(parts) > 2 else ""
+            time_enabled = parts[3].strip() if len(parts) > 3 else "0"
+            pcnt_running = parts[4].strip() if len(parts) > 4 else "100.00"
+
+            if not event_raw or raw_value in ("<not counted>", "<not supported>", ""):
+                continue
+
+            # Normalize event name: "armv8_pmuv3/cpu_cycles/" -> "cpu_cycles"
+            event_clean = event_raw.strip()
+            m = re.search(r"/([^/]+)/", event_clean)
+            if m:
+                event_clean = m.group(1)
+
+            logical_name = event_to_name.get(event_clean, event_clean)
+
+            try:
+                value = float(raw_value.replace(",", ""))
+            except ValueError:
+                value = 0.0
+
+            try:
+                enabled_ns = float(time_enabled)
+                pct = float(pcnt_running) / 100.0
+                running_ns = enabled_ns * pct
+            except ValueError:
+                enabled_ns = 0.0
+                running_ns = 0.0
+
+            counters[logical_name] = PerfCounter(
+                event=event_raw,
+                value=value,
+                unit="",
+                enabled_ns=enabled_ns,
+                running_ns=running_ns,
+            )
+
+        return counters
+
     def _parse_perf_stat_json(
         self, output: str, group: EventGroup
     ) -> Dict[str, PerfCounter]:
-        """Parse perf stat JSON output (one JSON object per line)."""
+        """Parse perf stat JSON output (one JSON object per line).
+
+        Kept for reference; active code now uses _parse_perf_stat_csv.
+        """
         counters: Dict[str, PerfCounter] = {}
         event_to_name = {v: k for k, v in group.events.items()}
 
