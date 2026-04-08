@@ -1,0 +1,89 @@
+{
+  "scenario_name": "MySQL OLTP",
+  "scenario_type": "database_oltp",
+  "timestamp": "2026-04-01T00:00:00+00:00",
+  "platform": "Kunpeng 920",
+  "kernel_version": "5.10.0",
+  "collection_duration_sec": 120.0,
+  "compute": {
+    "ipc": 0.85,
+    "cpi": 1.18,
+    "instruction_mix": {
+      "integer_ratio": 0.45,
+      "fp_ratio": 0.01,
+      "vector_ratio": 0.005,
+      "branch_ratio": 0.15,
+      "load_ratio": 0.3,
+      "store_ratio": 0.08,
+      "other_ratio": 0.0
+    },
+    "simd_utilization": 0.015,
+    "topdown_l1": {
+      "frontend_bound": 0.12,
+      "backend_bound": 0.45,
+      "retiring": 0.21,
+      "bad_speculation": 0.22
+    },
+    "topdown_l2": null
+  },
+  "cache": {
+    "l1i_mpki": 1.5,
+    "l1d_mpki": 15.2,
+    "l2_mpki": 5.8,
+    "l3_mpki": 2.3,
+    "l1d_miss_rate": 0.03,
+    "l2_miss_rate": 0.4,
+    "l3_miss_rate": 0.28,
+    "spatial_locality_score": null,
+    "temporal_locality_score": null,
+    "working_set_size_bytes": null
+  },
+  "branch": {
+    "branch_mpki": 6.2,
+    "branch_mispredict_rate": 0.048,
+    "indirect_branch_ratio": 0.22,
+    "branch_density": null
+  },
+  "memory": {
+    "bandwidth_read_gbps": 12.5,
+    "bandwidth_write_gbps": 5.8,
+    "bandwidth_utilization": 0.09,
+    "avg_latency_ns": null,
+    "p99_latency_ns": null,
+    "access_pattern": null,
+    "numa_local_ratio": null,
+    "tlb_mpki": null
+  },
+  "io": {
+    "iops_read": 15000.0,
+    "iops_write": 8000.0,
+    "throughput_read_mbps": 0.0,
+    "throughput_write_mbps": 0.0,
+    "avg_latency_us": null,
+    "p99_latency_us": null,
+    "read_write_ratio": null,
+    "io_depth": null,
+    "random_ratio": null
+  },
+  "network": {
+    "packets_per_sec_rx": 50000.0,
+    "packets_per_sec_tx": 48000.0,
+    "bandwidth_rx_mbps": 0.0,
+    "bandwidth_tx_mbps": 0.0,
+    "avg_latency_us": null,
+    "p99_latency_us": null,
+    "connection_rate": null,
+    "small_packet_ratio": null
+  },
+  "concurrency": {
+    "thread_count": 64,
+    "context_switches_per_sec": 0.0,
+    "voluntary_cs_ratio": null,
+    "lock_contention_pct": 3.5,
+    "futex_wait_time_us": null,
+    "ipc_mechanism": null
+  },
+  "scalability": null,
+  "bottleneck_summary": null,
+  "design_sensitivity": null
+}
