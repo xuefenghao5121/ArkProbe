@@ -25,6 +25,10 @@ platform:
   min_cores: 4
   recommended_cores: 32
 
+dependencies:
+  - nginx
+  - wrk
+
 workload:
   setup:
     - "cp /opt/benchmark/nginx_gateway.conf /etc/nginx/nginx.conf"

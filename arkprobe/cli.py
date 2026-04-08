@@ -47,32 +47,55 @@ def cli(ctx, verbose, data_dir):
 
 
 @cli.command("list")
-def list_scenarios_cmd():
+@click.option("--check", "do_check", is_flag=True,
+              help="Check dependency availability for each scenario")
+def list_scenarios_cmd(do_check):
     """List available scenario configurations."""
-    from .scenarios.loader import load_all_scenarios
+    from .deps.checker import check_dependencies
+    from .scenarios.loader import list_scenarios_lightweight
 
-    scenarios = load_all_scenarios()
+    items = list_scenarios_lightweight()
+
+    if not items:
+        console.print("[yellow]No scenario configurations found.[/yellow]")
+        return
 
     table = Table(title="Available Scenarios")
     table.add_column("Name", style="cyan")
     table.add_column("Type", style="green")
-    table.add_column("Cores", style="yellow")
-    table.add_column("Scalability", style="magenta")
+    table.add_column("Builtin", style="magenta")
+    if do_check:
+        table.add_column("Status", style="yellow")
+        table.add_column("Missing", style="red")
 
-    for s in scenarios:
-        table.add_row(
-            s.name,
-            s.type.value,
-            str(s.platform.recommended_cores),
-            "Yes" if s.scalability.enabled else "No",
-        )
+    for item in items:
+        builtin_mark = "Yes" if item["builtin"] else ""
+        if do_check:
+            deps = item.get("dependencies", [])
+            if not deps:
+                status = "[green]Ready[/green]"
+                missing = ""
+            else:
+                results = check_dependencies(deps)
+                missing_list = [r.binary for r in results if not r.available]
+                if missing_list:
+                    status = "[red]Missing deps[/red]"
+                    missing = ", ".join(missing_list)
+                else:
+                    status = "[green]Ready[/green]"
+                    missing = ""
+            table.add_row(item["name"], item["type"], builtin_mark, status, missing)
+        else:
+            table.add_row(item["name"], item["type"], builtin_mark)
 
     console.print(table)
+    if not do_check:
+        console.print("\n[dim]Tip: Use --check to verify dependency availability.[/dim]")
 
 
 @cli.command()
 @click.option("--scenario", "-s", multiple=True,
-              help='Scenario name(s) or "all"')
+              help='Scenario name(s), "builtin", or "all"')
 @click.option("--duration", "-t", type=int, default=60,
               help="Collection duration per phase (seconds)")
 @click.option("--skip-ebpf", is_flag=True,
@@ -88,12 +111,19 @@ def collect(ctx, scenario, duration, skip_ebpf, skip_scalability, kunpeng_model)
         CollectorOrchestrator,
         ScenarioCollectionConfig,
     )
-    from .scenarios.loader import load_all_scenarios, load_scenario
+    from .deps.checker import check_dependencies, format_missing_deps
+    from .scenarios.loader import load_all_scenarios, load_builtin_scenarios, load_scenario
+    from .workloads.build import resolve_builtin_command
 
     data_dir = ctx.obj["data_dir"]
 
     # Load scenarios
-    if "all" in scenario or not scenario:
+    if "builtin" in scenario:
+        scenarios = load_builtin_scenarios()
+        if not scenarios:
+            console.print("[red]No builtin scenarios found.[/red]")
+            return
+    elif "all" in scenario or not scenario:
         scenarios = load_all_scenarios()
     else:
         from .scenarios.loader import get_scenario_by_name, CONFIGS_DIR
@@ -114,13 +144,38 @@ def collect(ctx, scenario, duration, skip_ebpf, skip_scalability, kunpeng_model)
         console.print("[red]No scenarios to collect. Use 'list' to see available scenarios.[/red]")
         return
 
+    # Pre-flight dependency check
+    blocked = []
+    for sc in scenarios:
+        if sc.dependencies:
+            results = check_dependencies(sc.dependencies)
+            missing = [r for r in results if not r.available]
+            if missing:
+                blocked.append((sc.name, format_missing_deps(results)))
+
+    if blocked:
+        console.print("[red]Some scenarios have missing dependencies:[/red]\n")
+        for name, msg in blocked:
+            console.print(f"[cyan]{name}[/cyan]")
+            console.print(msg)
+            console.print()
+        console.print("[yellow]Install the missing tools and retry, or use "
+                       "'arkprobe collect -s builtin' for zero-dependency testing.[/yellow]")
+        return
+
     console.print(f"\n[bold]Collecting {len(scenarios)} scenario(s)[/bold]\n")
 
     for sc in scenarios:
         console.print(f"[cyan]>>> {sc.name}[/cyan]")
+
+        # Resolve builtin workload command to actual binary path
+        workload_cmd = sc.workload.command
+        if sc.builtin:
+            workload_cmd = resolve_builtin_command(workload_cmd)
+
         config = ScenarioCollectionConfig(
             scenario_name=sc.name.lower().replace(" ", "_"),
-            workload_command=sc.workload.command.format(
+            workload_command=workload_cmd.format(
                 thread_count=sc.platform.recommended_cores,
                 duration=duration,
             ),
@@ -143,6 +198,62 @@ def collect(ctx, scenario, duration, skip_ebpf, skip_scalability, kunpeng_model)
         console.print(f"  [green]Done in {result.collection_duration_sec:.1f}s[/green]\n")
 
     console.print(f"[bold green]Collection complete. Data saved to {data_dir}[/bold green]")
+
+
+@cli.command()
+def check():
+    """Check dependency availability for all scenarios."""
+    from .deps.checker import check_binary, check_dependencies
+    from .scenarios.loader import list_scenarios_lightweight
+
+    items = list_scenarios_lightweight()
+    if not items:
+        console.print("[yellow]No scenario configurations found.[/yellow]")
+        return
+
+    builtin = [i for i in items if i["builtin"]]
+    external = [i for i in items if not i["builtin"]]
+
+    if builtin:
+        console.print("\n[bold]Builtin Scenarios[/bold] (no external tools required)")
+        for item in builtin:
+            console.print(f"  [green]Ready[/green]  {item['name']}")
+
+    if external:
+        console.print("\n[bold]External Scenarios[/bold]")
+        table = Table(show_header=True)
+        table.add_column("Scenario", style="cyan")
+        table.add_column("Status")
+        table.add_column("Missing")
+        table.add_column("Install hint", style="dim")
+
+        for item in external:
+            deps = item.get("dependencies", [])
+            if not deps:
+                table.add_row(item["name"], "[green]Ready[/green]", "", "")
+            else:
+                results = check_dependencies(deps)
+                missing = [r for r in results if not r.available]
+                if missing:
+                    names = ", ".join(r.binary for r in missing)
+                    hints = "; ".join(r.install_hint for r in missing)
+                    table.add_row(item["name"], "[red]Missing[/red]", names, hints)
+                else:
+                    table.add_row(item["name"], "[green]Ready[/green]", "", "")
+
+        console.print(table)
+
+    console.print("\n[bold]System Tools[/bold]")
+    for tool in ["perf", "bpftrace", "gcc"]:
+        r = check_binary(tool)
+        if r.available:
+            console.print(f"  [green]OK[/green]     {tool} ({r.path})")
+        else:
+            console.print(f"  [red]Missing[/red]  {tool} -> {r.install_hint}")
+
+    ready_count = sum(1 for i in items
+                      if i["builtin"] or not i.get("dependencies"))
+    console.print(f"\n[bold]{ready_count} scenario(s) ready to run.[/bold]")
 
 
 @cli.command()

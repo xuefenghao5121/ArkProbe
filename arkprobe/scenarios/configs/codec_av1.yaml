@@ -24,6 +24,10 @@ platform:
   min_cores: 8
   recommended_cores: 64
 
+dependencies:
+  - ffmpeg
+  - SvtAv1EncApp
+
 workload:
   setup:
     - "test -f /opt/media/input_1080p.y4m || ffmpeg -f lavfi -i testsrc=duration=120:size=1920x1080:rate=30 -pix_fmt yuv420p /opt/media/input_1080p.y4m"

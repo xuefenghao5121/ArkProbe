@@ -26,6 +26,11 @@ platform:
   min_cores: 4
   recommended_cores: 32
 
+dependencies:
+  - docker-compose
+  - envoy
+  - nighthawk_client
+
 workload:
   setup:
     - "docker-compose -f /opt/benchmark/mesh/docker-compose.yaml up -d"

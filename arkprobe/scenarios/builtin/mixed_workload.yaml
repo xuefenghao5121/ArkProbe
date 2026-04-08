@@ -1,0 +1,63 @@
+# Mixed Compute + Memory Builtin Workload
+# Alternating matrix multiply and memory streaming phases.
+
+scenario:
+  name: "Mixed Workload (builtin)"
+  type: mixed
+  builtin: true
+  description: |
+    Alternating compute and memory phases: small matrix multiply (L1/L2 resident)
+    followed by large buffer streaming copy. Creates a realistic mixed micro-
+    architectural footprint with moderate IPC, varied cache behavior, and both
+    frontend and backend pressure. Useful as a balanced baseline representative
+    of general-purpose server workloads.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 16
+
+workload:
+  setup: []
+  command: "{builtin_binary_mixed} --threads {thread_count} --duration {duration}"
+  teardown: []
+  target_process: "arkprobe_mixed"
+  throughput_metric: "ops/sec"
+  throughput_regex: '(\d+\.?\d*)\s+ops/sec'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "ipc"
+    description: >
+      Instructions per cycle. Mixed workload should show moderate IPC (1.0-2.5),
+      lower than pure compute due to memory stalls during the streaming phase.
+      The difference from compute-only IPC quantifies memory subsystem impact.
+  - name: "backend_bound_pct"
+    description: >
+      Backend stall ratio. Should be moderate (20-40%) reflecting the memory
+      phase contribution. Comparing with pure compute and pure memory scenarios
+      reveals how the core handles workload phase transitions.
+  - name: "l2_mpki"
+    description: >
+      L2 misses per thousand instructions. The compute phase should have low
+      L2 MPKI (matrix fits in L2) while the memory phase drives high L2 MPKI.
+      The blended value shows overall cache pressure from mixed access patterns.

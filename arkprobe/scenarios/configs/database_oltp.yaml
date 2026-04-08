@@ -21,6 +21,10 @@ platform:
   min_cores: 4
   recommended_cores: 64
 
+dependencies:
+  - sysbench
+  - mysqld
+
 workload:
   setup:
     - "systemctl start mysqld"

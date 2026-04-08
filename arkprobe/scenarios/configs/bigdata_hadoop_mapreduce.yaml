@@ -24,6 +24,10 @@ platform:
   min_cores: 8
   recommended_cores: 64
 
+dependencies:
+  - hadoop
+  - hdfs
+
 workload:
   setup:
     - "start-dfs.sh && start-yarn.sh"

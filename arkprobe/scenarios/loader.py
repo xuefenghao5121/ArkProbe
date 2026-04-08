@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 # Default configs directory
 CONFIGS_DIR = Path(__file__).parent / "configs"
+BUILTIN_DIR = Path(__file__).parent / "builtin"
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
@@ -57,6 +58,8 @@ class ScenarioConfig(BaseModel):
     name: str
     type: ScenarioType
     description: str = ""
+    builtin: bool = False
+    dependencies: List[str] = Field(default_factory=list)
     platform: PlatformConfig = Field(default_factory=PlatformConfig)
     workload: WorkloadConfig
     collection: CollectionConfig = Field(default_factory=CollectionConfig)
@@ -73,6 +76,11 @@ def load_scenario(path: Path) -> ScenarioConfig:
     name = scenario_data.get("name", path.stem)
     scenario_type = scenario_data.get("type", "microservice")
     description = scenario_data.get("description", "")
+    builtin = scenario_data.get("builtin", False)
+
+    dependencies = raw.get("dependencies", [])
+    if dependencies is None:
+        dependencies = []
 
     platform = PlatformConfig.model_validate(raw.get("platform", {}))
     workload = WorkloadConfig.model_validate(raw.get("workload", {}))
@@ -84,7 +92,13 @@ def load_scenario(path: Path) -> ScenarioConfig:
         focus_metrics = focus.get("metrics", [])
         focus_desc = focus.get("description", "")
     elif isinstance(focus, list):
-        focus_metrics = focus
+        # focus_metrics entries can be strings or dicts with 'name' key
+        focus_metrics = []
+        for item in focus:
+            if isinstance(item, str):
+                focus_metrics.append(item)
+            elif isinstance(item, dict) and "name" in item:
+                focus_metrics.append(item["name"])
         focus_desc = ""
     else:
         focus_metrics = []
@@ -94,6 +108,8 @@ def load_scenario(path: Path) -> ScenarioConfig:
         name=name,
         type=ScenarioType(scenario_type),
         description=description,
+        builtin=builtin,
+        dependencies=dependencies,
         platform=platform,
         workload=workload,
         collection=collection,
@@ -103,35 +119,96 @@ def load_scenario(path: Path) -> ScenarioConfig:
     )
 
 
-def load_all_scenarios(configs_dir: Optional[Path] = None) -> List[ScenarioConfig]:
-    """Load all scenario configs from the configs directory."""
+def load_all_scenarios(
+    configs_dir: Optional[Path] = None,
+    include_builtin: bool = True,
+) -> List[ScenarioConfig]:
+    """Load all scenario configs from configs and builtin directories."""
     if configs_dir is None:
         configs_dir = CONFIGS_DIR
 
     scenarios = []
-    if not configs_dir.exists():
-        log.warning("Scenario configs directory not found: %s", configs_dir)
-        return scenarios
+    dirs = [configs_dir]
+    if include_builtin and BUILTIN_DIR.exists():
+        dirs.append(BUILTIN_DIR)
 
-    for yaml_file in sorted(configs_dir.glob("*.yaml")):
+    for scan_dir in dirs:
+        if not scan_dir.exists():
+            log.warning("Scenario configs directory not found: %s", scan_dir)
+            continue
+        for yaml_file in sorted(scan_dir.glob("*.yaml")):
+            try:
+                scenario = load_scenario(yaml_file)
+                scenarios.append(scenario)
+                log.info("Loaded scenario: %s (%s)", scenario.name, scenario.type)
+            except Exception as e:
+                log.error("Failed to load %s: %s", yaml_file.name, e)
+
+    return scenarios
+
+
+def load_builtin_scenarios() -> List[ScenarioConfig]:
+    """Load only builtin scenarios (zero external dependencies)."""
+    if not BUILTIN_DIR.exists():
+        return []
+    scenarios = []
+    for yaml_file in sorted(BUILTIN_DIR.glob("*.yaml")):
         try:
             scenario = load_scenario(yaml_file)
             scenarios.append(scenario)
-            log.info("Loaded scenario: %s (%s)", scenario.name, scenario.type)
         except Exception as e:
-            log.error("Failed to load %s: %s", yaml_file.name, e)
-
+            log.error("Failed to load builtin %s: %s", yaml_file.name, e)
     return scenarios
+
+
+def list_scenarios_lightweight(
+    configs_dir: Optional[Path] = None,
+    include_builtin: bool = True,
+) -> List[Dict[str, Any]]:
+    """List scenarios by reading only YAML metadata, no pydantic validation.
+
+    This never raises errors for malformed YAML — it skips bad files silently.
+    """
+    if configs_dir is None:
+        configs_dir = CONFIGS_DIR
+
+    results: List[Dict[str, Any]] = []
+    dirs = [configs_dir]
+    if include_builtin and BUILTIN_DIR.exists():
+        dirs.append(BUILTIN_DIR)
+
+    for scan_dir in dirs:
+        if not scan_dir.exists():
+            continue
+        for yaml_file in sorted(scan_dir.glob("*.yaml")):
+            try:
+                raw = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    continue
+                scenario_data = raw.get("scenario", {})
+                results.append({
+                    "name": scenario_data.get("name", yaml_file.stem),
+                    "type": scenario_data.get("type", "unknown"),
+                    "description": scenario_data.get("description", ""),
+                    "builtin": scenario_data.get("builtin", False),
+                    "dependencies": raw.get("dependencies", []) or [],
+                    "file": str(yaml_file),
+                })
+            except Exception:
+                # Skip unreadable files — don't block the listing
+                continue
+
+    return results
 
 
 def list_scenarios(configs_dir: Optional[Path] = None) -> List[Dict[str, str]]:
     """List available scenarios with name and type."""
     scenarios = load_all_scenarios(configs_dir)
-    return [{"name": s.name, "type": s.type.value, "file": ""} for s in scenarios]
+    return [{"name": s.name, "type": s.type.value, "builtin": s.builtin, "file": ""} for s in scenarios]
 
 
 def get_scenario_by_name(name: str, configs_dir: Optional[Path] = None) -> Optional[ScenarioConfig]:
-    """Find a scenario by name."""
+    """Find a scenario by name. Supports 'builtin' as a special group name."""
     for s in load_all_scenarios(configs_dir):
         if s.name == name or s.name.lower().replace(" ", "_") == name.lower().replace(" ", "_"):
             return s

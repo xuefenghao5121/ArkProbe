@@ -23,6 +23,9 @@ platform:
   min_cores: 8
   recommended_cores: 64
 
+dependencies:
+  - spark-submit
+
 workload:
   setup:
     - "systemctl start kafka"

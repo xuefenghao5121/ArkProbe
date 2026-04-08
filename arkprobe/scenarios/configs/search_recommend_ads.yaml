@@ -25,6 +25,9 @@ platform:
   min_cores: 16
   recommended_cores: 64
 
+dependencies:
+  - elasticsearch
+
 workload:
   setup:
     - "systemctl start elasticsearch"

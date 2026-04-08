@@ -22,6 +22,10 @@ platform:
   min_cores: 8
   recommended_cores: 64
 
+dependencies:
+  - pgbench
+  - psql
+
 workload:
   setup:
     - "systemctl start postgresql"

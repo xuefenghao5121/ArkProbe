@@ -14,6 +14,9 @@ class ScenarioType(str, Enum):
     CODEC_AUDIO = "codec_audio"
     SEARCH_RECOMMEND = "search_recommend"
     MICROSERVICE = "microservice"
+    COMPUTE_BOUND = "compute_bound"
+    MEMORY_BOUND = "memory_bound"
+    MIXED = "mixed"
 
 
 class BottleneckCategory(str, Enum):

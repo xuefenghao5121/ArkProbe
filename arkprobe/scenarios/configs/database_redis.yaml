@@ -22,6 +22,10 @@ platform:
   min_cores: 2
   recommended_cores: 32
 
+dependencies:
+  - redis-server
+  - redis-benchmark
+
 workload:
   setup:
     - "systemctl start redis"
