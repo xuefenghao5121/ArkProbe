@@ -153,6 +153,27 @@ ruff check arkprobe/ tests/
 | 鲲鹏 920 | TSV110 | 4-wide | 6 + 1 fixed | NEON 128-bit |
 | 鲲鹏 930 | TaiShan V200 | 8-wide | 6 + 1 fixed | NEON + SVE |
 
+## 更新日志
+
+### v0.1.1 (2026-04-08)
+
+**Bug Fixes**
+- 修复 `perf stat`/`perf record` 中 `sleep` 命令前缺少 `--` 分隔符导致参数解析错误
+- 修复 eBPF bpftrace 临时文件泄漏（`delete=False` 未清理）
+- 修复 P99 延迟计算索引越界风险
+- 修复 `collector_orchestrator` 中 `dict.get()` 无默认值导致 `None` 参与算术运算
+- 修复磁盘设备正则匹配不完整（`sd|vd` → `sd[a-z]|vd[a-z]`）
+- 修复设计空间分析中枚举比较使用字符串而非 `AccessPattern.RANDOM`
+- 修复 Amdahl 加速比归一化公式多乘了 `base_cores`
+- 修复 `futex_wait_time` 检查将 `0` 误判为 falsy
+- 修复瓶颈分析中硬编码 `dispatch_width=4`，改为可配置参数
+- 修复 PCA 图 legend 去重逻辑对重复 dict 失效
+- 修复带宽-延迟散点图中 `latency=0` 被 `or` 运算符误判
+
+### v0.1.0 (2026-04-08)
+
+- 初始发布：统一特征建模框架 + 12 个预置场景 + 完整分析引擎 + HTML 报告
+
 ## License
 
 MIT
