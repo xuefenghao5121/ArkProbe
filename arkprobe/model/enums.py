@@ -46,3 +46,25 @@ class PrefetchLevel(str, Enum):
     CONSERVATIVE = "conservative"
     MODERATE = "moderate"
     AGGRESSIVE = "aggressive"
+
+
+class TuningLayer(str, Enum):
+    """Platform tuning parameter layers."""
+    OS = "os"
+    BIOS = "bios"
+    DRIVER = "driver"
+
+
+class TuningDifficulty(str, Enum):
+    """How difficult/risky to apply a tuning change."""
+    TRIVIAL = "trivial"      # sysctl, echo to /sys — no restart needed
+    EASY = "easy"            # service restart needed
+    MODERATE = "moderate"    # reboot needed (GRUB params, some BIOS)
+    HARD = "hard"            # BIOS change, firmware update
+
+
+class TuningRiskLevel(str, Enum):
+    """Risk of applying the tuning change in production."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"

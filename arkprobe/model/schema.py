@@ -154,6 +154,57 @@ class ScalabilityProfile(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Platform configuration models (for optimization analysis)
+# ---------------------------------------------------------------------------
+
+class OSConfig(BaseModel):
+    """Current OS-level tuning parameters."""
+    hugepages_total: int = Field(0, description="vm.nr_hugepages")
+    hugepage_size_kb: int = Field(2048)
+    transparent_hugepage: str = Field("unknown", description="always/madvise/never")
+    cpu_governor: str = Field("unknown", description="scaling_governor value")
+    swappiness: int = Field(60, description="vm.swappiness")
+    dirty_ratio: int = Field(20, description="vm.dirty_ratio")
+    dirty_background_ratio: int = Field(10, description="vm.dirty_background_ratio")
+    numa_balancing: bool = Field(True, description="kernel.numa_balancing")
+    netdev_max_backlog: int = Field(1000, description="net.core.netdev_max_backlog")
+    somaxconn: int = Field(4096, description="net.core.somaxconn")
+    tcp_max_syn_backlog: int = Field(1024)
+    io_schedulers: Dict[str, str] = Field(
+        default_factory=dict, description="device -> scheduler")
+    sched_min_granularity_ns: Optional[int] = None
+    sched_migration_cost_ns: Optional[int] = None
+
+
+class BIOSConfig(BaseModel):
+    """Current BIOS/firmware-level settings (best-effort detection)."""
+    numa_enabled: Optional[bool] = None
+    smt_enabled: Optional[bool] = None
+    hw_prefetcher_enabled: Optional[bool] = None
+    power_profile: str = Field("unknown", description="performance/balanced/powersave")
+    c_states_enabled: Optional[bool] = None
+    turbo_boost_enabled: Optional[bool] = None
+
+
+class DriverConfig(BaseModel):
+    """Current driver/NIC/storage configuration."""
+    nic_offloads: Dict[str, Dict[str, bool]] = Field(
+        default_factory=dict, description="interface -> {tso: bool, gro: bool, ...}")
+    nic_ring_buffers: Dict[str, Dict[str, int]] = Field(
+        default_factory=dict, description="interface -> {rx: N, tx: N, rx_max: N, tx_max: N}")
+    irqbalance_active: bool = Field(True)
+    mount_options: Dict[str, List[str]] = Field(
+        default_factory=dict, description="mountpoint -> [option, ...]")
+
+
+class PlatformConfigSnapshot(BaseModel):
+    """Complete snapshot of current platform tuning configuration."""
+    os: OSConfig = Field(default_factory=OSConfig)
+    bios: BIOSConfig = Field(default_factory=BIOSConfig)
+    driver: DriverConfig = Field(default_factory=DriverConfig)
+
+
+# ---------------------------------------------------------------------------
 # The unified feature vector
 # ---------------------------------------------------------------------------
 
@@ -186,3 +237,6 @@ class WorkloadFeatureVector(BaseModel):
     # -- Derived (computed by analysis engine) --
     bottleneck_summary: Optional[str] = None
     design_sensitivity: Optional[Dict[str, float]] = None
+
+    # -- Platform config (for optimization analysis) --
+    platform_config: Optional[PlatformConfigSnapshot] = None

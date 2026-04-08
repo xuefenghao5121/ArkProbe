@@ -320,3 +320,70 @@ class ChartFactory:
             margin=dict(l=20, r=20, t=40, b=30),
         )
         return fig
+
+    @staticmethod
+    def optimization_gap_heatmap(matrix: pd.DataFrame) -> go.Figure:
+        """Scenarios x Tuning Parameters impact heatmap for optimization."""
+        if matrix.empty:
+            return go.Figure()
+
+        fig = go.Figure(go.Heatmap(
+            z=matrix.values,
+            x=matrix.columns.tolist(),
+            y=matrix.index.tolist(),
+            colorscale=[
+                [0, "#1a472a"],     # low impact — green (already tuned)
+                [0.3, "#2d6a4f"],
+                [0.5, "#f4a261"],   # medium impact — orange
+                [0.7, "#e76f51"],
+                [1.0, "#d62728"],   # high impact — red (needs tuning)
+            ],
+            text=matrix.map(lambda v: f"{v:.2f}").values,
+            texttemplate="%{text}",
+            colorbar_title="Impact",
+        ))
+
+        fig.update_layout(
+            title="Platform Optimization Impact Matrix (scenarios x parameters)",
+            xaxis_title="Tuning Parameter",
+            yaxis_title="Scenario",
+            height=max(350, len(matrix) * 40 + 100),
+            margin=dict(l=20, r=20, t=40, b=120),
+            xaxis_tickangle=-45,
+        )
+        return fig
+
+    @staticmethod
+    def optimization_score_bars(scores: Dict[str, float]) -> go.Figure:
+        """Per-scenario optimization score as horizontal bars."""
+        if not scores:
+            return go.Figure()
+
+        names = list(scores.keys())
+        values = list(scores.values())
+
+        colors = []
+        for v in values:
+            if v >= 80:
+                colors.append("#2ca02c")
+            elif v >= 50:
+                colors.append("#ff7f0e")
+            else:
+                colors.append("#d62728")
+
+        fig = go.Figure(go.Bar(
+            y=names, x=values,
+            orientation="h",
+            marker_color=colors,
+            text=[f"{v:.0f}/100" for v in values],
+            textposition="outside",
+        ))
+
+        fig.update_layout(
+            title="Platform Optimization Score (higher = better tuned)",
+            xaxis_title="Score",
+            xaxis_range=[0, 110],
+            height=max(250, len(names) * 40),
+            margin=dict(l=20, r=20, t=40, b=30),
+        )
+        return fig

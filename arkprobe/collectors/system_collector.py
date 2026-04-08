@@ -51,6 +51,11 @@ class SystemCollector(BaseCollector):
         except Exception as e:
             errors.append(f"disk: {e}")
 
+        try:
+            data["platform_config"] = self.collect_platform_config()
+        except Exception as e:
+            errors.append(f"platform_config: {e}")
+
         raw_path = self._save_raw(
             "system_metrics.json",
             json.dumps(data, indent=2, default=str),
@@ -266,3 +271,236 @@ class SystemCollector(BaseCollector):
         return {
             "context_switches_per_sec": (after - before) / duration_sec,
         }
+
+    # -------------------------------------------------------------------
+    # Platform configuration snapshot (for optimization analysis)
+    # -------------------------------------------------------------------
+
+    def collect_platform_config(self) -> Dict[str, Any]:
+        """Collect the full platform tuning configuration snapshot."""
+        return {
+            "os": self.collect_os_config(),
+            "bios": self.collect_bios_config(),
+            "driver": self.collect_driver_config(),
+        }
+
+    def collect_os_config(self) -> Dict[str, Any]:
+        """Read OS-level tuning parameters from /proc/sys, /sys."""
+        cfg: Dict[str, Any] = {}
+
+        # Hugepages
+        cfg["hugepages_total"] = self._read_int("/proc/sys/vm/nr_hugepages", 0)
+        cfg["hugepage_size_kb"] = self._read_int(
+            "/proc/meminfo", 2048, pattern=r"Hugepagesize:\s+(\d+)")
+
+        # Transparent Huge Pages
+        thp_path = Path("/sys/kernel/mm/transparent_hugepage/enabled")
+        if thp_path.exists():
+            content = thp_path.read_text().strip()
+            m = re.search(r"\[(\w+)\]", content)
+            cfg["transparent_hugepage"] = m.group(1) if m else "unknown"
+        else:
+            cfg["transparent_hugepage"] = "unknown"
+
+        # CPU governor
+        gov_path = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+        cfg["cpu_governor"] = gov_path.read_text().strip() if gov_path.exists() else "unknown"
+
+        # VM parameters
+        cfg["swappiness"] = self._read_int("/proc/sys/vm/swappiness", 60)
+        cfg["dirty_ratio"] = self._read_int("/proc/sys/vm/dirty_ratio", 20)
+        cfg["dirty_background_ratio"] = self._read_int(
+            "/proc/sys/vm/dirty_background_ratio", 10)
+
+        # NUMA balancing
+        cfg["numa_balancing"] = self._read_int(
+            "/proc/sys/kernel/numa_balancing", 1) == 1
+
+        # Network params
+        cfg["netdev_max_backlog"] = self._read_int(
+            "/proc/sys/net/core/netdev_max_backlog", 1000)
+        cfg["somaxconn"] = self._read_int(
+            "/proc/sys/net/core/somaxconn", 4096)
+        cfg["tcp_max_syn_backlog"] = self._read_int(
+            "/proc/sys/net/ipv4/tcp_max_syn_backlog", 1024)
+
+        # IO schedulers per block device
+        io_scheds: Dict[str, str] = {}
+        for sched_path in Path("/sys/block").glob("*/queue/scheduler"):
+            dev = sched_path.parts[-3]
+            content = sched_path.read_text().strip()
+            m = re.search(r"\[(\w[\w-]*)\]", content)
+            if m:
+                io_scheds[dev] = m.group(1)
+        cfg["io_schedulers"] = io_scheds
+
+        # Scheduler tuning
+        gran_path = "/proc/sys/kernel/sched_min_granularity_ns"
+        if Path(gran_path).exists():
+            cfg["sched_min_granularity_ns"] = self._read_int(gran_path, 0)
+        mig_path = "/proc/sys/kernel/sched_migration_cost_ns"
+        if Path(mig_path).exists():
+            cfg["sched_migration_cost_ns"] = self._read_int(mig_path, 0)
+
+        return cfg
+
+    def collect_bios_config(self) -> Dict[str, Any]:
+        """Detect BIOS-level settings from /sys (best-effort)."""
+        cfg: Dict[str, Any] = {}
+
+        # SMT: threads_per_core > 1 means enabled
+        platform = self.collect_platform_info()
+        cfg["smt_enabled"] = platform.get("threads_per_core", 1) > 1
+
+        # NUMA: multiple nodes implies NUMA enabled
+        cfg["numa_enabled"] = platform.get("numa_nodes", 1) > 1
+
+        # Power / energy performance preference
+        epp_path = Path(
+            "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
+        if epp_path.exists():
+            cfg["power_profile"] = epp_path.read_text().strip()
+        else:
+            gov = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+            cfg["power_profile"] = gov.read_text().strip() if gov.exists() else "unknown"
+
+        # C-states: check if any C-state > C0 is enabled
+        c_states_enabled = None
+        idle_base = Path("/sys/devices/system/cpu/cpu0/cpuidle")
+        if idle_base.exists():
+            c_states_enabled = False
+            for state_dir in sorted(idle_base.iterdir()):
+                if not state_dir.name.startswith("state"):
+                    continue
+                disable_path = state_dir / "disable"
+                if disable_path.exists():
+                    disabled = disable_path.read_text().strip() == "1"
+                    if not disabled and state_dir.name != "state0":
+                        c_states_enabled = True
+                        break
+        cfg["c_states_enabled"] = c_states_enabled
+
+        # HW Prefetcher — Kunpeng 920 may expose at this path
+        prefetch_path = Path("/sys/devices/system/cpu/cpu0/prefetch")
+        if prefetch_path.exists():
+            val = prefetch_path.read_text().strip()
+            cfg["hw_prefetcher_enabled"] = val not in ("0", "disabled")
+        else:
+            cfg["hw_prefetcher_enabled"] = None  # not detectable
+
+        # Turbo boost
+        boost_path = Path("/sys/devices/system/cpu/cpufreq/boost")
+        if boost_path.exists():
+            cfg["turbo_boost_enabled"] = boost_path.read_text().strip() == "1"
+        else:
+            cfg["turbo_boost_enabled"] = None
+
+        return cfg
+
+    def collect_driver_config(self) -> Dict[str, Any]:
+        """Collect NIC offload, ring buffer, IRQ, and mount option settings."""
+        cfg: Dict[str, Any] = {}
+
+        # NIC offloads and ring buffers
+        nic_offloads: Dict[str, Dict[str, bool]] = {}
+        nic_ring_buffers: Dict[str, Dict[str, int]] = {}
+        net_base = Path("/sys/class/net")
+        if net_base.exists():
+            for iface_path in net_base.iterdir():
+                iface = iface_path.name
+                if iface == "lo":
+                    continue
+                # Check if it's a physical device (has /device link)
+                if not (iface_path / "device").exists():
+                    continue
+
+                # Offloads via ethtool -k
+                offload_result = run_cmd(
+                    ["ethtool", "-k", iface], timeout_sec=5)
+                if offload_result.ok:
+                    offloads = {}
+                    for line in offload_result.stdout.splitlines():
+                        for feat in ("tcp-segmentation-offload",
+                                     "generic-receive-offload",
+                                     "large-receive-offload",
+                                     "generic-segmentation-offload"):
+                            if line.strip().startswith(feat):
+                                offloads[feat.replace("-", "_")] = ": on" in line
+                    if offloads:
+                        nic_offloads[iface] = offloads
+
+                # Ring buffers via ethtool -g
+                ring_result = run_cmd(
+                    ["ethtool", "-g", iface], timeout_sec=5)
+                if ring_result.ok:
+                    rings = self._parse_ring_buffer(ring_result.stdout)
+                    if rings:
+                        nic_ring_buffers[iface] = rings
+
+        cfg["nic_offloads"] = nic_offloads
+        cfg["nic_ring_buffers"] = nic_ring_buffers
+
+        # irqbalance
+        irq_result = run_cmd(
+            ["systemctl", "is-active", "irqbalance"], timeout_sec=5)
+        cfg["irqbalance_active"] = irq_result.stdout.strip() == "active"
+
+        # Mount options for non-virtual filesystems
+        mount_opts: Dict[str, List[str]] = {}
+        try:
+            mounts = Path("/proc/mounts").read_text()
+            for line in mounts.splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    dev, mountpoint, fstype, opts = parts[0], parts[1], parts[2], parts[3]
+                    if fstype in ("ext4", "xfs", "btrfs", "ext3"):
+                        mount_opts[mountpoint] = opts.split(",")
+        except Exception:
+            pass
+        cfg["mount_options"] = mount_opts
+
+        return cfg
+
+    # -------------------------------------------------------------------
+    # Private helpers
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _read_int(path: str, default: int, pattern: str | None = None) -> int:
+        """Read an integer from a file, optionally matching a regex pattern."""
+        try:
+            content = Path(path).read_text()
+            if pattern:
+                m = re.search(pattern, content)
+                return int(m.group(1)) if m else default
+            return int(content.strip())
+        except (OSError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_ring_buffer(output: str) -> Dict[str, int]:
+        """Parse ethtool -g output for current and max RX/TX values."""
+        result: Dict[str, int] = {}
+        section = ""
+        for line in output.splitlines():
+            if "Pre-set maximums" in line:
+                section = "max"
+            elif "Current hardware settings" in line:
+                section = "cur"
+            elif ":" in line:
+                key, _, val = line.partition(":")
+                key = key.strip().lower()
+                val = val.strip()
+                try:
+                    v = int(val)
+                except ValueError:
+                    continue
+                if key == "rx" and section == "max":
+                    result["rx_max"] = v
+                elif key == "rx" and section == "cur":
+                    result["rx"] = v
+                elif key == "tx" and section == "max":
+                    result["tx_max"] = v
+                elif key == "tx" and section == "cur":
+                    result["tx"] = v
+        return result

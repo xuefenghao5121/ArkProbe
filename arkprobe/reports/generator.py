@@ -17,10 +17,15 @@ from ..model.schema import WorkloadFeatureVector
 from ..analysis.bottleneck_analyzer import BottleneckAnalyzer, BottleneckReport
 from ..analysis.comparator import ComparisonReport, WorkloadComparator
 from ..analysis.design_space import DesignSensitivityReport, DesignSpaceExplorer
+from ..analysis.optimization_analyzer import (
+    OptimizationAnalyzer,
+    OptimizationReport as OptReport,
+)
 from .sections import (
     render_cross_scenario,
     render_design_recommendations,
     render_executive_summary,
+    render_optimization_recommendations,
     render_scenario_section,
 )
 
@@ -101,6 +106,27 @@ class ReportGenerator:
             feature_vectors, sensitivity_report
         )
 
+        # Platform optimization analysis
+        optimization_analyzer = OptimizationAnalyzer()
+        optimization_reports: Dict[str, OptReport] = {}
+        for fv in feature_vectors:
+            try:
+                optimization_reports[fv.scenario_name] = optimization_analyzer.analyze(fv)
+            except Exception as e:
+                log.error("Optimization analysis failed for %s: %s", fv.scenario_name, e)
+
+        cross_optimization = None
+        if len(feature_vectors) >= 2:
+            try:
+                cross_optimization = optimization_analyzer.cross_scenario_analysis(
+                    feature_vectors)
+            except Exception as e:
+                log.error("Cross-scenario optimization failed: %s", e)
+
+        optimization_html = render_optimization_recommendations(
+            feature_vectors, optimization_reports, cross_optimization
+        )
+
         # Render final HTML
         template = self.jinja_env.get_template("report_base.html")
         platform = feature_vectors[0].platform if feature_vectors else "Unknown"
@@ -114,6 +140,7 @@ class ReportGenerator:
             scenario_sections_html=scenario_html,
             cross_scenario_html=cross_html,
             design_recommendations_html=design_html,
+            optimization_recommendations_html=optimization_html,
         )
 
         # Write output

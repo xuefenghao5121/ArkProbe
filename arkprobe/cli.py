@@ -342,6 +342,78 @@ def sensitivity(ctx, feature_vectors):
         console.print(f"     {rec.justification}")
 
 
+@cli.command()
+@click.option("--feature-vectors", "-f", multiple=True, required=True,
+              help="Feature vector JSON files")
+@click.pass_context
+def optimize(ctx, feature_vectors):
+    """Show platform optimization recommendations for workloads."""
+    from .analysis.optimization_analyzer import OptimizationAnalyzer
+    from .model.feature_vector import load_feature_vector
+
+    fvs = [load_feature_vector(Path(p)) for p in feature_vectors]
+    analyzer = OptimizationAnalyzer()
+
+    for fv in fvs:
+        report = analyzer.analyze(fv)
+        score_style = "green" if report.optimization_score >= 80 else \
+                      "yellow" if report.optimization_score >= 50 else "red"
+        console.print(
+            f"\n[bold cyan]{fv.scenario_name}[/bold cyan] "
+            f"([{score_style}]{report.optimization_score:.0f}/100[/{score_style}])"
+        )
+
+        for layer_name in ("os", "bios", "driver"):
+            layer = report.layers.get(layer_name)
+            if not layer or layer.gaps_found == 0:
+                continue
+            console.print(
+                f"\n  [bold]{layer_name.upper()}[/bold] "
+                f"({layer.gaps_found} gaps)"
+            )
+
+            table = Table(show_header=True)
+            table.add_column("Parameter", style="cyan")
+            table.add_column("Current")
+            table.add_column("Recommended")
+            table.add_column("Impact", justify="center")
+            table.add_column("Command")
+
+            for rec in layer.recommendations:
+                if not rec.gap_detected:
+                    continue
+                impact_style = "red" if rec.impact_score > 0.6 else \
+                               "yellow" if rec.impact_score > 0.3 else "green"
+                cmd = rec.apply_commands[0] if rec.apply_commands else "-"
+                table.add_row(
+                    rec.display_name,
+                    rec.current_value,
+                    rec.recommended_value,
+                    f"[{impact_style}]{rec.impact_score:.0%}[/{impact_style}]",
+                    cmd,
+                )
+            console.print(table)
+
+    # Cross-scenario summary
+    if len(fvs) >= 2:
+        cross = analyzer.cross_scenario_analysis(fvs)
+        if cross.universal_recommendations:
+            console.print("\n[bold]Universal Recommendations (benefit all workloads):[/bold]")
+            for i, rec in enumerate(cross.universal_recommendations[:5]):
+                cmd = rec.apply_commands[0] if rec.apply_commands else "-"
+                console.print(
+                    f"  {i+1}. [bold]{rec.display_name}[/bold] → {cmd}"
+                )
+
+        if cross.conflicting_parameters:
+            console.print("\n[bold yellow]Conflicting Parameters:[/bold yellow]")
+            for conflict in cross.conflicting_parameters:
+                scenarios = ", ".join(
+                    f"{k}={v}" for k, v in conflict["scenarios_disagree"].items()
+                )
+                console.print(f"  {conflict['parameter']}: {scenarios}")
+
+
 def main():
     cli(obj={})
 

@@ -22,6 +22,7 @@ from ..model.schema import (
     InstructionMix,
     MemorySubsystem,
     NetworkCharacteristics,
+    PlatformConfigSnapshot,
     TopDownL1,
     TopDownL2,
     WorkloadFeatureVector,
@@ -60,6 +61,7 @@ class FeatureExtractor:
         io = self._extract_io(ebpf, system)
         network = self._extract_network(ebpf, system)
         concurrency = self._extract_concurrency(ebpf, system)
+        platform_config = self._extract_platform_config(system)
 
         # Enrich with eBPF data
         cache = self._enrich_cache_with_ebpf(cache, ebpf)
@@ -79,6 +81,7 @@ class FeatureExtractor:
             io=io,
             network=network,
             concurrency=concurrency,
+            platform_config=platform_config,
         )
 
         return fv
@@ -334,3 +337,20 @@ class FeatureExtractor:
             futex_wait_time_us=lock_data.get("avg_wait_ns", 0) / 1000
                                if lock_data.get("avg_wait_ns") is not None else None,
         )
+
+    # -----------------------------------------------------------------------
+    # Platform configuration
+    # -----------------------------------------------------------------------
+
+    def _extract_platform_config(
+        self, system: Dict[str, Any]
+    ) -> Optional[PlatformConfigSnapshot]:
+        """Build PlatformConfigSnapshot from raw system data."""
+        config_data = system.get("platform_config")
+        if config_data is None:
+            return None
+        try:
+            return PlatformConfigSnapshot.model_validate(config_data)
+        except Exception as e:
+            log.warning("Failed to parse platform config: %s", e)
+            return None
