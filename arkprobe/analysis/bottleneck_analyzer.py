@@ -54,6 +54,9 @@ class BottleneckAnalyzer:
     HIGH_BW_UTIL = 0.5
     HIGH_INDIRECT_RATIO = 0.3
 
+    def __init__(self, dispatch_width: int = 4):
+        self.dispatch_width = dispatch_width
+
     def analyze(self, fv: WorkloadFeatureVector) -> BottleneckReport:
         """Produce a structured bottleneck report from the feature vector."""
         td = fv.compute.topdown_l1
@@ -230,7 +233,7 @@ class BottleneckAnalyzer:
         core_indicators = []
         core_recs = []
 
-        ipc_ratio = fv.compute.ipc / max(1, 4)  # assuming 4-wide as baseline
+        ipc_ratio = fv.compute.ipc / max(1, self.dispatch_width)  # dispatch width from hardware config
         if ipc_ratio > 0.7 and not mem_indicators:
             core_indicators.append(
                 f"IPC = {fv.compute.ipc:.2f} approaching dispatch width — "
@@ -322,7 +325,7 @@ class BottleneckAnalyzer:
 
         notes.append(
             f"IPC = {fv.compute.ipc:.2f}, CPI = {fv.compute.cpi:.2f} "
-            f"(dispatch width = {4}, utilization = {fv.compute.ipc/4:.0%})"
+            f"(dispatch width = {self.dispatch_width}, utilization = {fv.compute.ipc/self.dispatch_width:.0%})"
         )
 
         # Cache hierarchy summary

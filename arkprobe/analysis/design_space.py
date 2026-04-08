@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from ..model.enums import AccessPattern
 from ..model.schema import WorkloadFeatureVector
 from ..utils.units import clamp
 
@@ -277,7 +278,7 @@ class DesignSpaceExplorer:
         score = clamp(1.0 - 1.0 / (1.0 + mpki / 5.0))
 
         # Penalize if random access pattern (larger cache won't help much)
-        if fv.memory.access_pattern == "random":
+        if fv.memory.access_pattern == AccessPattern.RANDOM:
             score *= 0.5
         elif fv.cache.spatial_locality_score and fv.cache.spatial_locality_score < 0.3:
             score *= 0.6

@@ -79,7 +79,7 @@ class ScalabilityAnalyzer:
             return None
 
         # Normalize to speedups relative to single-core
-        speedups = [tp / base_tp * base_cores for tp in throughputs]
+        speedups = [tp / base_tp for tp in throughputs]
         cores_arr = np.array(core_counts, dtype=float)
         speedups_arr = np.array(speedups, dtype=float)
 

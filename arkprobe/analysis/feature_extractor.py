@@ -332,5 +332,5 @@ class FeatureExtractor:
             context_switches_per_sec=0.0,  # Filled by system collector
             lock_contention_pct=lock_data.get("lock_contention_pct"),
             futex_wait_time_us=lock_data.get("avg_wait_ns", 0) / 1000
-                               if lock_data.get("avg_wait_ns") else None,
+                               if lock_data.get("avg_wait_ns") is not None else None,
         )

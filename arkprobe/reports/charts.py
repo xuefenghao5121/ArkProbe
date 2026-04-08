@@ -240,6 +240,7 @@ class ChartFactory:
             if p["type"] not in type_colors:
                 type_colors[p["type"]] = COLORS[len(type_colors) % len(COLORS)]
 
+        seen_types = set()
         for p in points:
             fig.add_trace(go.Scatter(
                 x=[p["x"]], y=[p["y"]],
@@ -248,8 +249,9 @@ class ChartFactory:
                 text=[p["name"]],
                 textposition="top center",
                 marker=dict(size=12, color=type_colors[p["type"]]),
-                showlegend=p["type"] not in [pp["type"] for pp in points[:points.index(p)]],
+                showlegend=p["type"] not in seen_types,
             ))
+            seen_types.add(p["type"])
 
         fig.update_layout(
             title="Workload PCA Projection",
@@ -269,7 +271,7 @@ class ChartFactory:
 
         for i, fv in enumerate(feature_vectors):
             bw = fv.memory.bandwidth_read_gbps + fv.memory.bandwidth_write_gbps
-            lat = fv.memory.avg_latency_ns or 50  # default
+            lat = fv.memory.avg_latency_ns if fv.memory.avg_latency_ns is not None else 50
             size = max(fv.cache.l3_mpki * 3, 8)
 
             fig.add_trace(go.Scatter(

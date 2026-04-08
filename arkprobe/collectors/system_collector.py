@@ -213,7 +213,7 @@ class SystemCollector(BaseCollector):
                 if len(parts) >= 14:
                     name = parts[2]
                     # Skip partitions (only major block devices)
-                    if re.match(r"^(sd|vd|nvme\d+n\d+)$", name) or name.startswith("dm-"):
+                    if re.match(r"^(sd[a-z]|vd[a-z]|nvme\d+n\d+)$", name) or name.startswith("dm-"):
                         stats[name] = {
                             "reads": int(parts[3]),
                             "read_sectors": int(parts[5]),

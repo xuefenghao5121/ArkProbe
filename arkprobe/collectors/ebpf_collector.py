@@ -249,7 +249,7 @@ class EbpfCollector(BaseCollector):
 
         avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
         latencies.sort()
-        p99_lat = latencies[int(len(latencies) * 0.99)] if latencies else 0.0
+        p99_lat = latencies[min(int(len(latencies) * 0.99), len(latencies) - 1)] if latencies else 0.0
 
         return {
             "avg_latency_us": avg_lat,
@@ -306,14 +306,20 @@ class EbpfCollector(BaseCollector):
 
     def _run_bpftrace(self, program: str, duration_sec: int) -> str:
         """Write a bpftrace program to a temp file and execute it."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".bt", delete=False) as f:
-            f.write(program)
-            f.flush()
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".bt", delete=False) as f:
+                tmp_path = f.name
+                f.write(program)
+                f.flush()
             result = run_cmd(
-                ["bpftrace", f.name],
+                ["bpftrace", tmp_path],
                 timeout_sec=duration_sec + 10,
             )
             return result.stdout + result.stderr
+        finally:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
 
     def _extract_bpftrace_var(self, output: str, var_name: str) -> int:
         """Extract a scalar variable value from bpftrace output."""

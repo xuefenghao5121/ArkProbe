@@ -212,9 +212,9 @@ class CollectorOrchestrator:
 
             perf_summaries.append({
                 "core_count": cores,
-                "ipc": topdown.get("instructions") / max(topdown.get("cycles"), 1),
-                "frontend_bound": topdown.get("stall_frontend") / max(topdown.get("cycles"), 1),
-                "backend_bound": topdown.get("stall_backend") / max(topdown.get("cycles"), 1),
+                "ipc": topdown.get("instructions", 0) / max(topdown.get("cycles", 1), 1),
+                "frontend_bound": topdown.get("stall_frontend", 0) / max(topdown.get("cycles", 1), 1),
+                "backend_bound": topdown.get("stall_backend", 0) / max(topdown.get("cycles", 1), 1),
             })
 
         # Compute scaling efficiency

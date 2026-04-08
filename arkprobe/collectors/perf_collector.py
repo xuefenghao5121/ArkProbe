@@ -125,13 +125,13 @@ class PerfCollector(BaseCollector):
         if pid is not None:
             cmd.extend(["-p", str(pid)])
             if duration_sec:
-                cmd.extend(["sleep", str(duration_sec)])
+                cmd.extend(["--", "sleep", str(duration_sec)])
         elif command:
             cmd.extend(["--", "sh", "-c", command])
         elif duration_sec:
-            cmd.extend(["-a", "sleep", str(duration_sec)])
+            cmd.extend(["-a", "--", "sleep", str(duration_sec)])
         else:
-            cmd.extend(["-a", "sleep", "10"])
+            cmd.extend(["-a", "--", "sleep", "10"])
 
         result = run_cmd(cmd, timeout_sec=max((duration_sec or 60) * repeat + 60, 300))
 
@@ -200,11 +200,11 @@ class PerfCollector(BaseCollector):
         if pid is not None:
             cmd.extend(["-p", str(pid)])
             if duration_sec:
-                cmd.extend(["sleep", str(duration_sec)])
+                cmd.extend(["--", "sleep", str(duration_sec)])
         elif command:
             cmd.extend(["--", "sh", "-c", command])
         elif duration_sec:
-            cmd.extend(["-a", "sleep", str(duration_sec)])
+            cmd.extend(["-a", "--", "sleep", str(duration_sec)])
 
         result = run_cmd(cmd, timeout_sec=max((duration_sec or 60) + 60, 300))
         if not result.ok:
