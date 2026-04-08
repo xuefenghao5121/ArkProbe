@@ -1,0 +1,100 @@
+# Hadoop MapReduce Workload Configuration
+# Classic MapReduce WordCount representative of distributed batch data processing.
+
+scenario:
+  name: "Hadoop MapReduce WordCount"
+  type: bigdata_batch
+  description: |
+    Hadoop MapReduce executing a WordCount job on a large text corpus stored in HDFS. While
+    simple, WordCount exercises the full MapReduce pipeline: HDFS block reads, map-side
+    tokenization and local aggregation, shuffle/sort across the network, and reduce-side
+    final aggregation with HDFS output writes.
+
+    From a hardware perspective, MapReduce is a classic IO-and-network-intensive workload.
+    The map phase is dominated by sequential HDFS reads (disk IO throughput), the shuffle
+    phase generates heavy cross-node network traffic (network bandwidth), and the reduce
+    phase writes results back to HDFS (disk IOPS for small block writes). CPU utilization
+    is moderate because the JVM spends significant time waiting on IO. The workload exercises
+    the full storage hierarchy from NVMe/SSD through the kernel page cache, and the network
+    stack for shuffle data transfer. It is a good proxy for evaluating IO subsystem and
+    network adapter performance under sustained load.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 8
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "start-dfs.sh && start-yarn.sh"
+    - "hdfs dfs -mkdir -p /user/hadoop/input"
+    - "hdfs dfs -put /opt/datasets/wikipedia_dump/ /user/hadoop/input/"
+  command: >
+    hadoop jar /opt/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples.jar
+    wordcount
+    -Dmapreduce.job.maps={thread_count}
+    -Dmapreduce.job.reduces={thread_count}
+    -Dmapreduce.task.timeout={duration}000
+    /user/hadoop/input
+    /user/hadoop/output-$(date +%s)
+  teardown:
+    - "hdfs dfs -rm -r /user/hadoop/input/ || true"
+    - "hdfs dfs -rm -r /user/hadoop/output-* || true"
+    - "stop-yarn.sh && stop-dfs.sh"
+  target_process: "java"
+  throughput_metric: "MB/sec"
+  throughput_regex: 'Bytes Read=(\d+)'
+
+collection:
+  perf_duration_sec: 120
+  ebpf_duration_sec: 60
+  warmup_sec: 30
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - memory_access
+    - memory_bandwidth
+  ebpf_probes:
+    - io_latency
+    - tcp_latency
+    - cache_stats
+
+scalability:
+  enabled: false
+  core_counts: [8, 16, 32, 48, 64]
+  thread_counts: [4, 8, 16, 32, 64]
+
+focus_metrics:
+  - name: "io_throughput_mbps"
+    description: >
+      Disk IO throughput in MB/s. The map phase reads HDFS blocks sequentially, and the
+      reduce phase writes output blocks. IO throughput is frequently the primary bottleneck
+      in MapReduce. Sustained throughput below 70% of device capability suggests kernel IO
+      scheduler tuning or readahead configuration issues.
+  - name: "network_throughput_gbps"
+    description: >
+      Network throughput in Gbps during the shuffle phase. MapReduce shuffle transfers all
+      intermediate key-value pairs across the network. Shuffle-heavy jobs (high map output to
+      input ratio) can saturate the network, making NIC bandwidth and kernel TCP stack
+      efficiency the limiting factors.
+  - name: "disk_iops"
+    description: >
+      Disk IO operations per second. During shuffle spill and merge phases, MapReduce
+      generates many small random writes and reads to local temporary files. High IOPS demand
+      with small IO sizes stresses the storage controller and filesystem metadata handling.
+      This metric helps determine whether NVMe vs. SSD vs. HDD placement matters for the
+      workload.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. MapReduce within the JVM typically achieves only 1.0-1.5 IPC
+      due to frequent IO waits and JVM overhead. IPC below 0.8 indicates the CPU is primarily
+      stalled on IO, confirming the workload is IO-bound rather than compute-bound.
+  - name: "cpu_utilization_pct"
+    description: >
+      Average CPU utilization across all cores. MapReduce often underutilizes CPU (30-60%)
+      because tasks block on HDFS reads, shuffle network transfers, or disk spills. Low CPU
+      utilization combined with high IO wait confirms the IO-bound nature and suggests that
+      faster storage or network would improve job completion time more than additional CPU
+      cores.

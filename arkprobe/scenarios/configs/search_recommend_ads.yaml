@@ -1,0 +1,108 @@
+# Search and Recommendation Workload Configuration
+# Elasticsearch/dense retrieval service representative of search, ads, and recommendation systems.
+
+scenario:
+  name: "Search & Recommendation (Elasticsearch)"
+  type: search_recommend
+  description: |
+    Elasticsearch serving a mix of keyword search queries (BM25 with inverted index traversal)
+    and dense vector similarity search (k-NN with HNSW graph traversal) for a product search
+    and recommendation system. This workload represents the serving tier of search engines,
+    ad retrieval systems, and recommendation platforms.
+
+    From a hardware perspective, search/recommendation exhibits a unique combination of
+    challenges. Inverted index traversal follows linked-list-like pointer chains through
+    posting lists (high branch MPKI from skip-list decisions, moderate L3 MPKI from irregular
+    memory access). Dense vector retrieval performs embedding lookups from large vector tables
+    (high memory bandwidth for distance computations, high L3 MPKI from random embedding
+    access). The combined workload has low spatial locality (random document/vector access),
+    high branch misprediction (data-dependent traversal decisions), and significant memory
+    bandwidth demand (scoring and distance computation over large vector spaces). Query latency
+    is the primary SLA, making tail latency metrics critical.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 16
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "systemctl start elasticsearch"
+    - "sleep 30"
+    - "curl -s -XPUT 'localhost:9200/products' -H 'Content-Type: application/json' -d @/opt/benchmark/es_index_mapping.json"
+    - "/opt/benchmark/es_bulk_load.sh --index products --docs 10000000 --vector-dim 768"
+    - "curl -s -XPOST 'localhost:9200/products/_forcemerge?max_num_segments=1'"
+    - "sleep 10"
+  command: >
+    /opt/benchmark/esrally race
+    --track-path=/opt/benchmark/tracks/search_recommend
+    --target-hosts=localhost:9200
+    --pipeline=benchmark-only
+    --client-count={thread_count}
+    --test-execution-duration={duration}
+    --on-error=abort
+  teardown:
+    - "curl -s -XDELETE 'localhost:9200/products' || true"
+    - "systemctl stop elasticsearch"
+  target_process: "java"
+  throughput_metric: "queries/sec"
+  throughput_regex: 'Throughput\s+(\d+\.?\d*)\s+ops/s'
+
+collection:
+  perf_duration_sec: 90
+  ebpf_duration_sec: 60
+  warmup_sec: 30
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+    - memory_bandwidth
+  ebpf_probes:
+    - cache_stats
+    - tcp_latency
+    - io_latency
+
+scalability:
+  enabled: false
+  core_counts: [16, 32, 48, 64]
+  thread_counts: [1, 4, 8, 16, 32, 64]
+
+focus_metrics:
+  - name: "branch_mpki"
+    description: >
+      Branch misses per thousand instructions. Inverted index traversal uses skip-lists and
+      posting list intersection algorithms with data-dependent skip decisions. HNSW graph
+      traversal makes greedy routing decisions at each hop based on distance comparisons.
+      Both patterns produce branches that depend on query-specific data, leading to high
+      misprediction rates. Branch MPKI above 5 is typical and represents a significant
+      fraction of wasted cycles.
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. Embedding vector lookups access random positions
+      in a large vector table (10M vectors x 768 dims x 4 bytes = ~29GB), guaranteeing L3
+      misses on most accesses. Inverted index posting lists also exhibit poor locality for
+      rare terms. L3 MPKI above 8 is expected and confirms memory-latency-bound execution.
+      Prefetch effectiveness is critical here.
+  - name: "memory_bandwidth_gbps"
+    description: >
+      Sustained memory bandwidth in GB/s. Dense vector distance computation (dot product or
+      cosine similarity over 768-dim vectors) is bandwidth-intensive, especially when computing
+      distances against many candidate vectors in the HNSW search. Bandwidth utilization above
+      50% of peak indicates the scoring phase is memory-bandwidth-bound and would benefit from
+      quantized vectors (int8) or hardware-accelerated distance computation.
+  - name: "query_latency_p99_ms"
+    description: >
+      99th-percentile query latency in milliseconds. Search SLAs are typically defined at P99
+      (e.g., <50ms). Tail latency spikes correlate with L3 miss bursts on cold segments, GC
+      pauses, and NUMA-remote memory accesses. This is the primary SLA metric that determines
+      whether the hardware configuration meets production requirements.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. Search workloads typically achieve only 1.0-1.5 IPC due to the
+      combination of pointer-chasing (index traversal) and random memory access (embedding
+      lookup). The gap between achieved IPC and theoretical maximum reveals how much
+      performance is lost to memory stalls, and quantifies the benefit of improved prefetching
+      or larger caches.

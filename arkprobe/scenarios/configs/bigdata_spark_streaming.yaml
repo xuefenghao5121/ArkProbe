@@ -1,0 +1,115 @@
+# Spark Structured Streaming Workload Configuration
+# Continuous micro-batch stream processing representative of real-time analytics pipelines.
+
+scenario:
+  name: "Spark Structured Streaming"
+  type: bigdata_streaming
+  description: |
+    Spark Structured Streaming consuming from Kafka, performing windowed aggregations and
+    joins, and writing results to a sink. This workload represents real-time analytics
+    pipelines including event processing, real-time dashboards, and streaming ETL.
+
+    From a hardware perspective, streaming workloads differ from batch in several key ways:
+    they are latency-sensitive (micro-batch interval bounds end-to-end latency), network-
+    intensive (continuous Kafka consumption generates sustained NIC traffic), and must maintain
+    state across batches (stateful operators keep hash maps in memory). The workload creates
+    a steady-state resource profile rather than the phased behavior of batch jobs. Memory
+    bandwidth is consumed continuously by state updates and network buffer copies. Context
+    switches are frequent due to the interleaving of network IO, state management, and
+    computation within each micro-batch.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 8
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "systemctl start kafka"
+    - "systemctl start zookeeper"
+    - "kafka-topics.sh --create --topic benchmark-input --partitions 64 --replication-factor 1 --bootstrap-server localhost:9092 || true"
+    - "kafka-topics.sh --create --topic benchmark-output --partitions 64 --replication-factor 1 --bootstrap-server localhost:9092 || true"
+    - "nohup kafka-producer-perf-test.sh --topic benchmark-input --num-records 100000000 --record-size 256 --throughput 500000 --producer-props bootstrap.servers=localhost:9092 &"
+  command: >
+    spark-submit
+    --master yarn
+    --deploy-mode client
+    --driver-memory 4g
+    --executor-memory 8g
+    --executor-cores 4
+    --num-executors {thread_count}
+    --conf spark.sql.shuffle.partitions=64
+    --conf spark.streaming.kafka.maxRatePerPartition=10000
+    --class com.benchmark.StreamingBench
+    /opt/spark-bench/streaming-bench.jar
+    --bootstrap-servers localhost:9092
+    --input-topic benchmark-input
+    --output-topic benchmark-output
+    --window-duration 10s
+    --slide-duration 5s
+    --duration {duration}
+  teardown:
+    - "kill $(pgrep -f kafka-producer-perf) || true"
+    - "kafka-topics.sh --delete --topic benchmark-input --bootstrap-server localhost:9092 || true"
+    - "kafka-topics.sh --delete --topic benchmark-output --bootstrap-server localhost:9092 || true"
+    - "systemctl stop kafka"
+    - "systemctl stop zookeeper"
+  target_process: "java"
+  throughput_metric: "records/sec"
+  throughput_regex: 'processedRowsPerSecond\s*=\s*(\d+\.?\d*)'
+
+collection:
+  perf_duration_sec: 120
+  ebpf_duration_sec: 60
+  warmup_sec: 30
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+    - memory_bandwidth
+  ebpf_probes:
+    - tcp_latency
+    - io_latency
+    - cache_stats
+    - lock_contention
+
+scalability:
+  enabled: false
+  core_counts: [8, 16, 32, 48, 64]
+  thread_counts: [2, 4, 8, 16, 32]
+
+focus_metrics:
+  - name: "network_throughput_gbps"
+    description: >
+      Network throughput in Gbps. Streaming workloads continuously consume from Kafka and
+      produce to sinks, generating sustained bidirectional network traffic. When network
+      throughput approaches NIC line rate, the pipeline becomes network-bound and micro-batch
+      latency increases. This metric is critical for sizing NIC bandwidth and evaluating
+      kernel bypass (DPDK) benefits.
+  - name: "memory_bandwidth_gbps"
+    description: >
+      Sustained memory bandwidth in GB/s. Stateful operators maintain in-memory hash maps
+      that are continuously updated, and network buffers are copied through the JVM heap.
+      Unlike batch, streaming has a constant bandwidth demand. Saturation causes micro-batch
+      processing time to exceed the trigger interval, leading to backpressure.
+  - name: "context_switch_rate"
+    description: >
+      Context switches per second across all cores. Streaming workloads interleave network
+      IO (Kafka fetch), state access, and computation within tight micro-batch cycles.
+      High context switch rates (>50K/s) indicate excessive thread contention or kernel
+      scheduling overhead that inflates per-batch latency.
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. Stateful streaming operators (windowed aggregations,
+      stream-stream joins) maintain hash maps whose size grows with the window duration and
+      key cardinality. L3 MPKI above 6 suggests the state has exceeded L3 capacity and the
+      workload would benefit from state partitioning or larger caches.
+  - name: "tcp_latency_p99_us"
+    description: >
+      99th-percentile TCP round-trip latency in microseconds between Spark executors and
+      Kafka brokers. Network latency directly adds to micro-batch processing time. Elevated
+      P99 values indicate NIC interrupt coalescing tuning issues, NUMA-remote NIC placement,
+      or kernel networking stack overhead.

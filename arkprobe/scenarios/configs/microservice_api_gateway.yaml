@@ -1,0 +1,102 @@
+# Microservice API Gateway Workload Configuration
+# Nginx/Envoy reverse proxy under load, representative of edge and API gateway tiers.
+
+scenario:
+  name: "API Gateway (Nginx + wrk)"
+  type: microservice
+  description: |
+    Nginx configured as a reverse proxy / API gateway handling HTTP requests, with wrk
+    generating sustained load. This workload represents the edge tier of microservice
+    architectures: TLS termination, request routing, rate limiting, header manipulation,
+    and load balancing across backend services.
+
+    From a hardware perspective, API gateways are network-packet-processing workloads. They
+    are characterized by extremely high packets-per-second (PPS) throughput with small payload
+    sizes (typical API responses are 1-10KB), heavy context switching between connection
+    handling threads, significant time in kernel networking stack (TCP/IP processing, socket
+    operations), and TLS cryptographic operations (AES-GCM for bulk encryption, ECDHE for
+    key exchange). The workload is often bottlenecked by the kernel networking stack rather
+    than userspace code, making kernel bypass techniques (io_uring, DPDK) and NIC offload
+    capabilities highly relevant. Per-core performance is critical because Nginx uses a
+    worker-per-core model.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 4
+  recommended_cores: 32
+
+workload:
+  setup:
+    - "cp /opt/benchmark/nginx_gateway.conf /etc/nginx/nginx.conf"
+    - "nginx -t && systemctl restart nginx"
+    - "nohup python3 -m http.server 8081 --directory /opt/benchmark/static/ &"
+  command: >
+    wrk
+    -t {thread_count}
+    -c $(( {thread_count} * 100 ))
+    -d {duration}s
+    --latency
+    -s /opt/benchmark/scripts/mixed_api_requests.lua
+    https://localhost:443/api/
+  teardown:
+    - "systemctl stop nginx"
+    - "kill $(pgrep -f 'python3 -m http.server 8081') || true"
+  target_process: "nginx"
+  throughput_metric: "requests/sec"
+  throughput_regex: 'Requests/sec:\s+(\d+\.?\d*)'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 30
+  warmup_sec: 15
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+  ebpf_probes:
+    - tcp_latency
+    - lock_contention
+    - io_latency
+
+scalability:
+  enabled: false
+  core_counts: [1, 2, 4, 8, 16, 32]
+  thread_counts: [1, 2, 4, 8, 16, 32]
+
+focus_metrics:
+  - name: "network_pps"
+    description: >
+      Network packets per second (TX + RX). API gateways process a high volume of small
+      packets (HTTP headers, small JSON payloads). PPS is often the binding constraint before
+      bandwidth is saturated. At high PPS (>1M), per-packet kernel overhead (sk_buff allocation,
+      TCP state machine, interrupt handling) dominates CPU utilization. This metric determines
+      whether NIC RSS (receive-side scaling) and interrupt affinity are properly configured.
+  - name: "context_switch_rate"
+    description: >
+      Context switches per second. Nginx's event-loop model (epoll) should minimize context
+      switches, but high connection counts and keep-alive timeouts force periodic wakeups.
+      Context switch rates above 100K/s indicate the system is spending significant time in
+      kernel scheduling rather than processing requests. This metric is critical for
+      evaluating io_uring vs. epoll efficiency.
+  - name: "tcp_latency_p99_us"
+    description: >
+      99th-percentile TCP connection and response latency in microseconds. API gateway SLAs
+      are defined by tail latency (e.g., P99 < 5ms). TLS handshake latency, kernel socket
+      buffer management, and interrupt coalescing all contribute to tail latency. This metric
+      directly maps to user-visible API response time overhead added by the gateway tier.
+  - name: "small_packet_ratio"
+    description: >
+      Ratio of packets smaller than 256 bytes to total packets. API gateways generate many
+      small packets (TCP ACKs, HTTP headers, small JSON responses). A high small-packet ratio
+      (>60%) indicates the workload is PPS-bound rather than bandwidth-bound, and would
+      benefit from NIC offloads (GRO/GSO), interrupt coalescing, or kernel bypass.
+  - name: "crypto_cycles_pct"
+    description: >
+      Percentage of CPU cycles spent in TLS/crypto operations (identified by profiling
+      openssl/kTLS symbols). With TLS 1.3 and AES-GCM, bulk encryption can consume 15-30%
+      of CPU cycles at high throughput. This metric determines whether hardware crypto
+      acceleration (Kunpeng's built-in crypto engine) is being utilized and how much
+      throughput improvement it provides over software crypto.

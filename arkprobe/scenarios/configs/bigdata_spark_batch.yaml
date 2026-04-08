@@ -1,0 +1,105 @@
+# Apache Spark Batch Processing Workload Configuration
+# Large-scale data processing representative of ETL and analytics pipelines.
+
+scenario:
+  name: "Apache Spark Batch (TPC-DS / WordCount)"
+  type: bigdata_batch
+  description: |
+    Apache Spark executing batch analytics queries (TPC-DS subset or large-scale WordCount/
+    aggregation jobs). This workload represents offline data processing pipelines including
+    ETL, feature engineering, and batch analytics that are common in data lake architectures.
+
+    From a hardware perspective, Spark batch is characterized by high memory bandwidth demand
+    (shuffle and sort phases stream large datasets), significant L3 pressure from hash-based
+    shuffle and aggregation operators, and JVM garbage collection overhead that causes periodic
+    CPU stalls. The workload runs inside the JVM, so object header overhead inflates the
+    effective working set by 2-3x compared to native code. Spark's DAG execution model
+    creates distinct phases (map, shuffle, reduce) with different hardware resource profiles,
+    making time-series analysis of PMU counters particularly valuable.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 16
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "start-all.sh"
+    - "hdfs dfs -mkdir -p /user/spark/input"
+    - "hdfs dfs -put /opt/datasets/tpcds_sf100/ /user/spark/input/"
+  command: >
+    spark-submit
+    --master yarn
+    --deploy-mode client
+    --driver-memory 8g
+    --executor-memory 16g
+    --executor-cores 8
+    --num-executors {thread_count}
+    --conf spark.sql.shuffle.partitions=200
+    --conf spark.default.parallelism=200
+    --class com.benchmark.TpcDsBatch
+    /opt/spark-bench/tpcds-bench.jar
+    --scale-factor 100
+    --iterations 3
+    --duration {duration}
+  teardown:
+    - "hdfs dfs -rm -r /user/spark/input/ || true"
+    - "hdfs dfs -rm -r /user/spark/output/ || true"
+    - "stop-all.sh"
+  target_process: "java"
+  throughput_metric: "queries/hour"
+  throughput_regex: 'Throughput:\s+(\d+\.?\d*)\s+queries/hour'
+
+collection:
+  perf_duration_sec: 120
+  ebpf_duration_sec: 60
+  warmup_sec: 60
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+    - memory_bandwidth
+  ebpf_probes:
+    - io_latency
+    - cache_stats
+    - lock_contention
+
+scalability:
+  enabled: true
+  core_counts: [16, 32, 48, 64]
+  thread_counts: [2, 4, 8, 16, 32]
+
+focus_metrics:
+  - name: "memory_bandwidth_gbps"
+    description: >
+      Sustained memory bandwidth in GB/s. Spark's shuffle and sort phases stream large
+      datasets through memory, and the JVM's object layout inflates effective data size.
+      When memory bandwidth utilization exceeds 60% of peak, shuffle-heavy queries become
+      bandwidth-bound. This is the single most important metric for sizing Spark clusters.
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. Spark's hash-based shuffle buffers, aggregation
+      hash maps, and broadcast variables compete for L3 space. High L3 MPKI (>8) during
+      shuffle phases indicates that partition sizing should be tuned or that the workload
+      would benefit from increased per-core L3 allocation.
+  - name: "gc_overhead_pct"
+    description: >
+      Percentage of wall-clock time spent in JVM garbage collection (derived from GC logs
+      and correlated with PMU stall cycles). Spark's object-heavy execution model generates
+      significant GC pressure. GC overhead above 10% represents wasted CPU cycles and
+      introduces latency variance. This metric helps determine whether off-heap memory
+      (Tungsten) or GC tuning would improve throughput.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. JVM workloads on AArch64 typically achieve 1.5-2.5 IPC. Drops
+      during shuffle phases reveal memory-bound execution, while drops during GC pauses show
+      the overhead of stop-the-world collection. Phase-aware IPC analysis is essential.
+  - name: "io_throughput_mbps"
+    description: >
+      Disk IO throughput in MB/s during shuffle spill and HDFS read/write phases. Spark spills
+      intermediate data to disk when executor memory is exhausted. High IO throughput with low
+      CPU utilization indicates the job is IO-bound and would benefit from faster storage or
+      increased executor memory to avoid spills.

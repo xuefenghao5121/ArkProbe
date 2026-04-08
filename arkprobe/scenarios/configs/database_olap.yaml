@@ -1,0 +1,92 @@
+# PostgreSQL TPC-H OLAP Workload Configuration
+# Analytical queries on large datasets, representative of data warehouse workloads.
+
+scenario:
+  name: "PostgreSQL TPC-H OLAP"
+  type: database_olap
+  description: |
+    TPC-H benchmark queries running against PostgreSQL. TPC-H models decision-support workloads
+    with complex multi-table joins, aggregations, and sorts over a star-schema dataset. Queries
+    scan large fact tables (lineitem, orders) and perform hash joins, group-by aggregations,
+    and order-by sorts.
+
+    From a hardware perspective, OLAP is dominated by sequential memory bandwidth consumption
+    (scanning columnar data or heap pages), high L2/L3 miss rates when hash tables exceed cache
+    capacity, and significant SIMD opportunity in vectorized execution paths. Unlike OLTP, OLAP
+    has low branch misprediction (sequential scans are predictable) but can saturate memory
+    controllers. The workload benefits strongly from higher memory bandwidth and larger L3
+    caches that keep hash join build sides resident.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 8
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "systemctl start postgresql"
+    - "createdb tpch_sf10 || true"
+    - "pgbench_tpch_load.sh --scale-factor=10 --database=tpch_sf10"
+  command: >
+    pgbench_tpch_run.sh
+    --database=tpch_sf10
+    --clients={thread_count}
+    --time={duration}
+    --query-set=all
+  teardown:
+    - "dropdb tpch_sf10 || true"
+  target_process: "postgres"
+  throughput_metric: "queries/hour"
+  throughput_regex: 'QphH@Size\s*=\s*(\d+\.?\d*)'
+
+collection:
+  perf_duration_sec: 120
+  ebpf_duration_sec: 60
+  warmup_sec: 30
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+    - memory_bandwidth
+  ebpf_probes:
+    - io_latency
+    - cache_stats
+
+scalability:
+  enabled: true
+  core_counts: [8, 16, 32, 48, 64]
+  thread_counts: [1, 2, 4, 8, 16, 32]
+
+focus_metrics:
+  - name: "memory_bandwidth_gbps"
+    description: >
+      Sustained memory bandwidth in GB/s. TPC-H queries perform sequential scans over large
+      tables that stream through the cache hierarchy. This is often the primary bottleneck;
+      when bandwidth utilization exceeds 70% of theoretical peak, query execution becomes
+      memory-bandwidth-bound rather than compute-bound.
+  - name: "simd_utilization_pct"
+    description: >
+      Percentage of instructions using SIMD (NEON/SVE) execution units. PostgreSQL's vectorized
+      execution paths (and columnar extensions like cstore_fdw) can leverage SIMD for predicate
+      evaluation, aggregation, and hash computation. Low SIMD utilization (<10%) indicates the
+      query engine is falling back to scalar paths, leaving performance on the table.
+  - name: "l2_mpki"
+    description: >
+      L2 misses per thousand instructions. Hash join build-side hash tables and sort buffers
+      that fit in L2 dramatically improve join performance. When L2 MPKI exceeds 10, it
+      suggests the working set of the current query operator has spilled beyond L2, and query
+      plan adjustments (smaller partitions) or larger L2 would help.
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. Large hash join build sides and sort runs that
+      exceed L3 cause expensive DRAM accesses. L3 MPKI above 5 in OLAP typically correlates
+      with significant memory stall cycles and indicates the workload would benefit from
+      increased L3 capacity or improved prefetching.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. Well-optimized OLAP can reach 2.0-3.0 IPC when data is cache-
+      resident, but drops sharply when memory-bandwidth-bound. Tracking IPC across different
+      TPC-H queries reveals which query patterns are compute-bound vs. memory-bound.

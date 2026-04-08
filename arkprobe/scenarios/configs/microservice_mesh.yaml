@@ -1,0 +1,107 @@
+# Service Mesh (Envoy Sidecar) Workload Configuration
+# Envoy as sidecar proxy representative of service mesh overhead in microservice deployments.
+
+scenario:
+  name: "Service Mesh (Envoy Sidecar)"
+  type: microservice
+  description: |
+    Envoy proxy running as a sidecar (Istio-style service mesh) handling inter-service
+    communication between microservices. The benchmark measures the overhead Envoy adds to
+    service-to-service calls: request interception via iptables redirect, TLS mutual
+    authentication (mTLS), header-based routing, observability data collection (metrics,
+    traces, access logs), and connection pooling.
+
+    From a hardware perspective, the service mesh sidecar is a latency tax on every inter-
+    service call. Each request traverses two Envoy proxies (client-side and server-side),
+    adding 2-5ms of latency per hop. The overhead comes from: kernel networking (iptables
+    traversal, socket operations, context switches between application and sidecar), TLS
+    mTLS handshakes and bulk encryption, and Envoy's own request processing (header parsing,
+    route matching, filter chain execution). At high request rates, lock contention in
+    Envoy's worker threads and memory allocation pressure from connection tracking become
+    significant. Understanding the sidecar overhead breakdown is critical for determining
+    whether hardware acceleration (crypto offload, NIC offload) can reduce the latency tax.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 4
+  recommended_cores: 32
+
+workload:
+  setup:
+    - "docker-compose -f /opt/benchmark/mesh/docker-compose.yaml up -d"
+    - "sleep 15"
+    - "/opt/benchmark/mesh/wait_for_ready.sh"
+  command: >
+    nighthawk_client
+    --connections {thread_count}
+    --rps $(( {thread_count} * 1000 ))
+    --duration {duration}s
+    --concurrency auto
+    --output-format human
+    --request-header "x-test-id: benchmark"
+    https://localhost:10000/api/v1/checkout
+  teardown:
+    - "docker-compose -f /opt/benchmark/mesh/docker-compose.yaml down"
+  target_process: "envoy"
+  throughput_metric: "requests/sec"
+  throughput_regex: 'benchmark\.http_2xx:\s+(\d+)'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 30
+  warmup_sec: 20
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+  ebpf_probes:
+    - tcp_latency
+    - lock_contention
+    - io_latency
+    - cache_stats
+
+scalability:
+  enabled: false
+  core_counts: [2, 4, 8, 16, 32]
+  thread_counts: [4, 8, 16, 32, 64, 128]
+
+focus_metrics:
+  - name: "network_latency_overhead_us"
+    description: >
+      Additional latency in microseconds introduced by the Envoy sidecar pair (measured as
+      mesh-path latency minus direct-path latency). This is the headline metric for service
+      mesh overhead. Decomposing this overhead into kernel time (iptables, socket ops),
+      crypto time (mTLS), and userspace time (Envoy processing) reveals which component
+      dominates and where hardware acceleration would have the most impact.
+  - name: "context_switch_rate"
+    description: >
+      Context switches per second. Each mesh-proxied request causes multiple context switches:
+      app-to-kernel (iptables redirect), kernel-to-envoy (client sidecar), envoy-to-kernel
+      (upstream connect), kernel-to-envoy (server sidecar), envoy-to-kernel (app delivery).
+      At 10K RPS per service, this generates >100K context switches/s. High rates (>200K/s)
+      indicate the sidecar model is spending more time in kernel transitions than processing
+      requests.
+  - name: "lock_contention_pct"
+    description: >
+      Percentage of CPU cycles spent in lock contention within Envoy. Envoy's worker threads
+      share connection pools, route tables, and stats structures protected by mutexes. At
+      high request rates, contention on the connection pool lock and TLS session cache lock
+      becomes a scalability bottleneck. Values above 10% suggest the thread model needs
+      tuning (more workers, connection-per-thread) or lock-free data structures.
+  - name: "tcp_latency_p99_us"
+    description: >
+      99th-percentile TCP latency for sidecar-to-sidecar connections. The mesh adds a full
+      TCP connection (with mTLS) between each sidecar pair. P99 TCP latency captures the
+      worst-case overhead from TCP handshake, mTLS negotiation, and kernel socket scheduling.
+      Values above 2ms indicate the mesh is adding unacceptable tail latency for latency-
+      sensitive services.
+  - name: "crypto_cycles_pct"
+    description: >
+      Percentage of CPU cycles in TLS/crypto operations. mTLS means every inter-service
+      request performs both client-cert and server-cert TLS operations in both sidecars.
+      Crypto overhead of 20-40% is typical and represents the largest single contributor to
+      sidecar CPU overhead. This directly measures the benefit of Kunpeng's hardware crypto
+      acceleration for service mesh deployments.

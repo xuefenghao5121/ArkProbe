@@ -1,0 +1,98 @@
+# Redis Key-Value Store Workload Configuration
+# In-memory key-value operations representative of caching and session store workloads.
+
+scenario:
+  name: "Redis (redis-benchmark)"
+  type: database_kv
+  description: |
+    redis-benchmark driving GET/SET operations against a Redis server. This workload represents
+    in-memory key-value stores used for caching, session management, rate limiting, and real-time
+    leaderboards. The data structure is predominantly hash tables with some sorted sets.
+
+    From a hardware perspective, Redis is single-threaded per shard (io-threads for network only),
+    making single-core performance critical. The workload is characterized by extremely high
+    L1D sensitivity (the hash table and data reside in a compact working set), significant
+    branch misprediction from hash table probing and command dispatch, and network-latency
+    sensitivity since each operation completes in microseconds. IPC is typically high (2.0-3.0)
+    when the working set fits in L1/L2 because operations are short and compute-dense, but
+    degrades rapidly if the hash table spills to L3 or DRAM.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 2
+  recommended_cores: 32
+
+workload:
+  setup:
+    - "systemctl start redis"
+    - "redis-cli CONFIG SET maxmemory 8gb"
+    - "redis-cli CONFIG SET maxmemory-policy allkeys-lru"
+    - "redis-cli FLUSHALL"
+  command: >
+    redis-benchmark
+    -h 127.0.0.1
+    -p 6379
+    -c {thread_count}
+    -n 10000000
+    -d 128
+    -t get,set
+    --threads {thread_count}
+    -q
+  teardown:
+    - "redis-cli FLUSHALL"
+    - "systemctl stop redis"
+  target_process: "redis-server"
+  throughput_metric: "requests/sec"
+  throughput_regex: '(\d+\.?\d*)\s+requests per second'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 30
+  warmup_sec: 15
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+  ebpf_probes:
+    - tcp_latency
+    - cache_stats
+    - lock_contention
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16, 32]
+  thread_counts: [1, 4, 8, 16, 32, 64, 128, 256]
+
+focus_metrics:
+  - name: "l1d_mpki"
+    description: >
+      L1 data cache misses per thousand instructions. Redis's hash table is the hot data
+      structure; each GET/SET probes the table and accesses the value. When the hash table
+      fits in L1D, operations complete in ~100ns; L1D misses push latency to 300-500ns.
+      L1D MPKI above 15 indicates the working set has exceeded L1D capacity.
+  - name: "network_latency_p99_us"
+    description: >
+      99th-percentile network round-trip latency in microseconds. Since Redis operations
+      complete in single-digit microseconds of CPU time, network latency dominates end-to-end
+      response time. This metric reveals whether kernel networking overhead, interrupt
+      coalescing, or NUMA-remote NIC placement is adding latency.
+  - name: "branch_mpki"
+    description: >
+      Branch misses per thousand instructions. Redis's command dispatch (switch on command
+      type), hash table open-addressing probes, and SDS string comparisons generate data-
+      dependent branches. Branch MPKI above 5 indicates the branch predictor is struggling
+      with the randomized access patterns inherent in hash table operations.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. Redis typically achieves high IPC (2.0-3.0) due to its compact,
+      cache-friendly code path. IPC drops indicate memory stalls from hash table misses or
+      branch misprediction penalties. Monitoring IPC across different data sizes reveals the
+      working set threshold where performance cliffs occur.
+  - name: "context_switch_rate"
+    description: >
+      Voluntary and involuntary context switches per second. Redis's event-loop model should
+      have minimal context switches. Elevated rates indicate kernel scheduling interference,
+      which directly translates to latency spikes in a single-threaded server.

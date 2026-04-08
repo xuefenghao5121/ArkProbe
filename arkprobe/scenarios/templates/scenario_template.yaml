@@ -1,0 +1,45 @@
+# Workload Scenario Configuration Template
+# Copy this file and fill in the values for your workload.
+
+scenario:
+  name: "My Workload"
+  type: database_oltp  # One of: database_oltp, database_olap, database_kv, bigdata_batch, bigdata_streaming, codec_video, codec_audio, search_recommend, microservice
+  description: |
+    Description of the workload and what it represents.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 4
+  recommended_cores: 64
+
+workload:
+  setup: []
+  command: "echo 'replace with actual workload command'"
+  teardown: []
+  target_process: ""
+  throughput_metric: "ops/sec"
+  throughput_regex: '(\d+\.?\d*)\s+ops/sec'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 30
+  warmup_sec: 30
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+  ebpf_probes:
+    - io_latency
+    - lock_contention
+    - cache_stats
+    - tcp_latency
+
+scalability:
+  enabled: false
+  core_counts: [1, 2, 4, 8, 16, 32, 48, 64]
+  thread_counts: [1, 2, 4, 8, 16, 32, 48, 64]
+
+focus_metrics: []

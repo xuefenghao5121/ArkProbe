@@ -1,0 +1,46 @@
+{
+  "topdown_l1": {
+    "cycles": 1000000000,
+    "instructions": 850000000,
+    "stall_frontend": 150000000,
+    "stall_backend": 400000000
+  },
+  "instruction_mix": {
+    "inst_retired": 850000000,
+    "br_retired": 127500000,
+    "vfp_spec": 8500000,
+    "ase_spec": 4250000,
+    "ld_spec": 255000000,
+    "st_spec": 127500000
+  },
+  "cache_l1": {
+    "l1d_cache": 500000000,
+    "l1d_cache_refill": 10000000,
+    "l1i_cache": 200000000,
+    "l1i_cache_refill": 1700000,
+    "inst_retired": 850000000
+  },
+  "cache_l2_l3": {
+    "l2d_cache": 10000000,
+    "l2d_cache_refill": 3000000,
+    "l3d_cache": 3000000,
+    "l3d_cache_refill": 850000,
+    "inst_retired": 850000000
+  },
+  "branch_prediction": {
+    "br_retired": 127500000,
+    "br_mis_pred_retired": 5100000,
+    "br_immed_spec": 89250000,
+    "br_indirect_spec": 25500000,
+    "br_return_spec": 12750000,
+    "inst_retired": 850000000
+  },
+  "memory_access": {
+    "mem_access": 382500000,
+    "bus_access": 15000000,
+    "bus_cycles": 1000000000,
+    "dtlb_walk": 850000,
+    "itlb_walk": 170000,
+    "inst_retired": 850000000
+  }
+}

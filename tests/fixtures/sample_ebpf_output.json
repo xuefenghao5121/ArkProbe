@@ -1,0 +1,41 @@
+{
+  "io_latency": {
+    "histogram": [
+      {"low": 0, "high": 1, "count": 100},
+      {"low": 1, "high": 2, "count": 500},
+      {"low": 2, "high": 4, "count": 2000},
+      {"low": 4, "high": 8, "count": 5000},
+      {"low": 8, "high": 16, "count": 3000},
+      {"low": 16, "high": 32, "count": 1000},
+      {"low": 32, "high": 64, "count": 300},
+      {"low": 64, "high": 128, "count": 80},
+      {"low": 128, "high": 256, "count": 15},
+      {"low": 256, "high": 512, "count": 5}
+    ],
+    "avg_latency_us": 8.5,
+    "p99_latency_us": 64.0,
+    "unit": "us"
+  },
+  "lock_contention": {
+    "total_wait_ns": 500000000,
+    "lock_count": 150000,
+    "avg_wait_ns": 3333,
+    "lock_contention_pct": 2.5
+  },
+  "cache_stats": {
+    "page_cache_hits": 950000,
+    "page_cache_misses": 50000,
+    "hit_rate": 0.95
+  },
+  "tcp_latency": {
+    "avg_latency_us": 120.5,
+    "p99_latency_us": 850.0,
+    "sample_count": 10000
+  },
+  "network_stats": {
+    "packets_per_sec_rx": 125000,
+    "packets_per_sec_tx": 118000,
+    "bandwidth_rx_mbps": 450.5,
+    "bandwidth_tx_mbps": 425.3
+  }
+}

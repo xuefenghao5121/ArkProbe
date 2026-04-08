@@ -1,0 +1,98 @@
+# AV1 Video Encoding Workload Configuration
+# AV1 encoding with SVT-AV1 representative of royalty-free next-generation video delivery.
+
+scenario:
+  name: "AV1 Video Encoding (SVT-AV1)"
+  type: codec_video
+  description: |
+    FFmpeg encoding a video source using the SVT-AV1 encoder. AV1 is the royalty-free
+    successor to VP9, offering ~30% bitrate savings over HEVC. SVT-AV1 (Scalable Video
+    Technology for AV1) is Intel/Netflix's production encoder optimized for parallelism and
+    SIMD, and is now the de facto standard for AV1 encoding in production.
+
+    From a hardware perspective, AV1 encoding is the most computationally demanding of the
+    three codecs (H.264 < H.265 < AV1). AV1 introduces new tools: 64-point transforms,
+    CDEF (constrained directional enhancement filter), loop restoration filters, and film
+    grain synthesis, all of which are SIMD-intensive. SVT-AV1 is designed from the ground up
+    for massive parallelism (segment-based threading), achieving better core scaling than
+    x265. The wider transforms (64-point) benefit from SVE's wider vectors more than any
+    other codec. AV1 encoding is the ultimate stress test for SIMD width, SIMD throughput,
+    dispatch width, and multi-core scaling on modern server CPUs.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 8
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "test -f /opt/media/input_1080p.y4m || ffmpeg -f lavfi -i testsrc=duration=120:size=1920x1080:rate=30 -pix_fmt yuv420p /opt/media/input_1080p.y4m"
+  command: >
+    ffmpeg -y
+    -i /opt/media/input_1080p.y4m
+    -c:v libsvtav1
+    -preset 6
+    -crf 30
+    -svtav1-params "lp={thread_count}"
+    -t {duration}
+    -f null /dev/null
+  teardown: []
+  target_process: "ffmpeg"
+  throughput_metric: "fps"
+  throughput_regex: 'speed=\s*(\d+\.?\d*)x'
+
+collection:
+  perf_duration_sec: 90
+  ebpf_duration_sec: 30
+  warmup_sec: 10
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+    - simd_utilization
+  ebpf_probes:
+    - cache_stats
+    - lock_contention
+
+scalability:
+  enabled: true
+  core_counts: [4, 8, 16, 32, 48, 64]
+  thread_counts: [4, 8, 16, 32, 48, 64]
+
+focus_metrics:
+  - name: "simd_utilization_pct"
+    description: >
+      Percentage of retired SIMD instructions. SVT-AV1 has extensive NEON/SVE assembly for
+      all core algorithms. AV1's 64-point transforms and CDEF filters particularly benefit
+      from wider SIMD vectors (SVE 256-bit+). Expected utilization is 40-55% at preset 6.
+      Comparing SIMD utilization between SVT-AV1 and x265 reveals how well the platform's
+      SIMD units handle the wider transforms unique to AV1.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. SVT-AV1 at preset 6 typically achieves 2.0-3.0 IPC. The wide
+      dispatch width of modern cores is exercised by the mix of SIMD arithmetic (transforms),
+      SIMD memory (reference loads), and scalar control (partition decisions). IPC is the
+      best single proxy for how well the microarchitecture handles AV1's instruction mix.
+  - name: "core_scaling_efficiency"
+    description: >
+      Throughput ratio at N cores vs. baseline. SVT-AV1's segment-based parallelism was
+      designed for 64+ core scaling, making it the best-scaling video codec. Scaling efficiency
+      above 85% at 32 cores is expected. Degradation at high core counts reveals inter-core
+      communication bottlenecks (L3 snooping, coherence traffic) rather than algorithmic
+      limitations.
+  - name: "dispatch_width_utilization"
+    description: >
+      Average number of micro-ops dispatched per cycle as a fraction of the theoretical
+      dispatch width. SVT-AV1's inner loops mix SIMD compute, SIMD loads, and scalar branches
+      in a pattern that can challenge the instruction scheduler. This metric reveals whether
+      the dispatch width or execution unit count is the binding constraint.
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. AV1's larger transform sizes and CDEF filter
+      windows access wider regions of the frame, increasing the reference frame working set.
+      At 1080p, the working set typically fits in L3 (frame = ~3MB), but at 4K (frame = ~12MB)
+      L3 pressure becomes significant. L3 MPKI above 5 at 1080p indicates inefficient
+      reference frame management.

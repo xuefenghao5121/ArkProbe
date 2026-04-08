@@ -1,0 +1,98 @@
+# x265 Video Encoding Workload Configuration
+# H.265/HEVC encoding representative of next-generation streaming and 4K content delivery.
+
+scenario:
+  name: "x265 Video Encoding (H.265/HEVC)"
+  type: codec_video
+  description: |
+    FFmpeg encoding a video source using the libx265 encoder (H.265/HEVC). HEVC achieves
+    roughly 50% bitrate savings over H.264 at equivalent quality, making it essential for 4K
+    streaming and bandwidth-constrained delivery. However, the encoding complexity is 3-10x
+    higher than H.264 due to larger coding tree units (CTU up to 64x64), more prediction
+    modes, and advanced in-loop filters (SAO).
+
+    From a hardware perspective, x265 is even more SIMD-intensive than x264 due to the larger
+    block sizes and additional transform sizes (4x4 through 32x32 DCT). The recursive CTU
+    partitioning creates more complex control flow (deeper branch prediction challenges) while
+    the larger transform sizes demand wider SIMD operations. Core scaling is critical because
+    single-threaded x265 encoding is too slow for real-time use at any reasonable preset. The
+    workload heavily exercises both SIMD throughput and multi-core synchronization, making it
+    an excellent stress test for the core-to-core communication fabric and SIMD pipeline depth.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 8
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "test -f /opt/media/input_4k.y4m || ffmpeg -f lavfi -i testsrc=duration=120:size=3840x2160:rate=30 -pix_fmt yuv420p /opt/media/input_4k.y4m"
+  command: >
+    ffmpeg -y
+    -i /opt/media/input_4k.y4m
+    -c:v libx265
+    -preset medium
+    -crf 28
+    -x265-params "pools={thread_count}:frame-threads=4:wpp=1"
+    -t {duration}
+    -f null /dev/null
+  teardown: []
+  target_process: "ffmpeg"
+  throughput_metric: "fps"
+  throughput_regex: 'speed=\s*(\d+\.?\d*)x'
+
+collection:
+  perf_duration_sec: 90
+  ebpf_duration_sec: 30
+  warmup_sec: 10
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+    - simd_utilization
+  ebpf_probes:
+    - cache_stats
+    - lock_contention
+
+scalability:
+  enabled: true
+  core_counts: [4, 8, 16, 32, 48, 64]
+  thread_counts: [4, 8, 16, 32, 48, 64]
+
+focus_metrics:
+  - name: "simd_utilization_pct"
+    description: >
+      Percentage of retired instructions using SIMD (NEON/SVE) execution units. x265 uses
+      SIMD for all core algorithms: SAD/SATD for motion estimation, DCT/IDCT transforms up
+      to 32x32, quantization, deblocking, and SAO filtering. Expected utilization is 35-50%
+      at medium preset. SVE with wider vectors (256-bit+) can significantly accelerate the
+      32x32 transforms that are unique to HEVC.
+  - name: "core_scaling_efficiency"
+    description: >
+      Multi-core scaling efficiency measured as speedup at N cores vs. single-core throughput.
+      x265 uses wavefront parallel processing (WPP) and frame-level threading, requiring
+      row-level synchronization between threads. Scaling efficiency above 80% at 16 cores is
+      good; degradation beyond 32 cores often indicates synchronization overhead in the WPP
+      wavefront dependency chain.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. x265 at medium preset typically achieves 2.0-3.5 IPC, slightly
+      lower than x264 due to the more complex control flow of recursive CTU partitioning.
+      The gap between x265 and x264 IPC reveals the microarchitectural cost of HEVC's
+      additional algorithmic complexity.
+  - name: "branch_mpki"
+    description: >
+      Branch misses per thousand instructions. The recursive quad-tree CTU partitioning in
+      x265 generates data-dependent branches (split vs. not-split decisions at each level)
+      that are harder to predict than x264's fixed macroblock structure. Branch MPKI above 4
+      indicates the content is causing frequent partition changes that challenge the branch
+      predictor.
+  - name: "l2_mpki"
+    description: >
+      L2 misses per thousand instructions. x265's 64x64 CTU size means each coding unit
+      accesses a 4KB region (at 8-bit depth), and motion estimation over 64x64 blocks
+      touches larger reference frame regions than x264's 16x16 macroblocks. L2 MPKI above 10
+      indicates reference frame working set pressure.

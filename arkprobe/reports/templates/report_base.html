@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        :root {
+            --bg: #1a1a2e;
+            --bg-card: #16213e;
+            --text: #e0e0e0;
+            --text-muted: #a0a0a0;
+            --accent: #0f3460;
+            --highlight: #e94560;
+            --border: #2a2a4a;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header {
+            background: linear-gradient(135deg, var(--accent), var(--bg-card));
+            padding: 40px; border-radius: 12px; margin-bottom: 30px;
+        }
+        header h1 { font-size: 2em; margin-bottom: 8px; }
+        header .subtitle { color: var(--text-muted); font-size: 1.1em; }
+        header .meta { margin-top: 15px; font-size: 0.9em; color: var(--text-muted); }
+
+        .section {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+        }
+        .section h2 {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--highlight);
+        }
+        .section h3 { font-size: 1.2em; margin: 20px 0 10px 0; color: var(--highlight); }
+
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+
+        .chart-container {
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: var(--accent);
+            color: var(--text);
+            font-weight: 600;
+        }
+        tr:hover { background: rgba(255,255,255,0.03); }
+
+        .metric-card {
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+        .metric-card .value { font-size: 2em; font-weight: 700; color: var(--highlight); }
+        .metric-card .label { font-size: 0.85em; color: var(--text-muted); margin-top: 4px; }
+
+        .note {
+            background: rgba(233, 69, 96, 0.1);
+            border-left: 4px solid var(--highlight);
+            padding: 12px 16px;
+            margin: 10px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        .note p { margin: 4px 0; }
+
+        .tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            margin: 2px;
+        }
+        .tag-high { background: #d62728; color: white; }
+        .tag-medium { background: #ff7f0e; color: white; }
+        .tag-low { background: #2ca02c; color: white; }
+
+        .toc { padding: 20px 0; }
+        .toc a { color: var(--highlight); text-decoration: none; margin-right: 20px; }
+        .toc a:hover { text-decoration: underline; }
+
+        .scenario-tab {
+            display: inline-block;
+            padding: 8px 16px;
+            margin: 4px;
+            border-radius: 8px;
+            background: var(--accent);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .scenario-tab:hover, .scenario-tab.active {
+            background: var(--highlight);
+        }
+
+        @media (max-width: 900px) {
+            .grid-2, .grid-3 { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>{{ title }}</h1>
+        <div class="subtitle">Workload Characterization & Hardware Design Space Analysis</div>
+        <div class="meta">
+            Generated: {{ timestamp }} | Platform: {{ platform }} |
+            Scenarios: {{ scenario_count }} | Framework: ArkProbe v{{ version }}
+        </div>
+    </header>
+
+    <!-- Table of Contents -->
+    <div class="section toc">
+        <a href="#executive-summary">Executive Summary</a>
+        <a href="#scenario-analysis">Scenario Analysis</a>
+        <a href="#cross-scenario">Cross-Scenario Comparison</a>
+        <a href="#design-recommendations">Design Recommendations</a>
+    </div>
+
+    <!-- Executive Summary -->
+    {{ executive_summary_html }}
+
+    <!-- Per-Scenario Deep Dive -->
+    {{ scenario_sections_html }}
+
+    <!-- Cross-Scenario Comparison -->
+    {{ cross_scenario_html }}
+
+    <!-- Design Recommendations -->
+    {{ design_recommendations_html }}
+
+    <div class="section" style="text-align:center; color: var(--text-muted); font-size: 0.9em;">
+        Generated by <strong>ArkProbe</strong> |
+        Targeting Kunpeng ARM processors for next-gen chip design space exploration
+    </div>
+</div>
+</body>
+</html>

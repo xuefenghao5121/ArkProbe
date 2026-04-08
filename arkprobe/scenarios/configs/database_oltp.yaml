@@ -1,0 +1,96 @@
+# MySQL OLTP Workload Configuration
+# Sysbench oltp_read_write against MySQL, representative of transactional database workloads.
+
+scenario:
+  name: "MySQL OLTP (sysbench)"
+  type: database_oltp
+  description: |
+    Sysbench oltp_read_write running against MySQL/InnoDB. This workload generates a mix of
+    point selects, range scans, inserts, updates, and deletes against a B-tree indexed schema.
+    It is representative of general-purpose OLTP databases (e-commerce, banking, SaaS backends).
+
+    From a hardware perspective, OLTP is characterized by high random memory access (B-tree
+    traversal and buffer pool lookups), heavy lock contention at high concurrency, moderate
+    branch misprediction from data-dependent control flow in query execution, and latency-
+    sensitive IO on commit (fsync to WAL). IPC is typically moderate (1.0-2.0) because the
+    instruction stream is dominated by pointer-chasing through index nodes and row data,
+    limiting the CPU's ability to extract instruction-level parallelism.
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 4
+  recommended_cores: 64
+
+workload:
+  setup:
+    - "systemctl start mysqld"
+    - "mysql -u root -e \"CREATE DATABASE IF NOT EXISTS sbtest;\""
+    - "sysbench oltp_read_write --mysql-host=127.0.0.1 --mysql-user=root --mysql-db=sbtest --tables=16 --table-size=1000000 --threads={thread_count} prepare"
+  command: >
+    sysbench oltp_read_write
+    --mysql-host=127.0.0.1
+    --mysql-user=root
+    --mysql-db=sbtest
+    --tables=16
+    --table-size=1000000
+    --threads={thread_count}
+    --time={duration}
+    --report-interval=10
+    run
+  teardown:
+    - "sysbench oltp_read_write --mysql-host=127.0.0.1 --mysql-user=root --mysql-db=sbtest --tables=16 cleanup"
+    - "mysql -u root -e \"DROP DATABASE IF EXISTS sbtest;\""
+  target_process: "mysqld"
+  throughput_metric: "transactions/sec"
+  throughput_regex: 'transactions:\s+\d+\s+\((\d+\.?\d*)\s+per sec'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 30
+  warmup_sec: 60
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - branch_prediction
+    - memory_access
+  ebpf_probes:
+    - io_latency
+    - lock_contention
+    - cache_stats
+    - tcp_latency
+
+scalability:
+  enabled: true
+  core_counts: [4, 8, 16, 32, 48, 64]
+  thread_counts: [4, 8, 16, 32, 64, 128, 256, 512]
+
+focus_metrics:
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. MySQL's buffer pool and B-tree pages create a large
+      working set that often exceeds L3 capacity. High L3 MPKI (>5) indicates the workload is
+      memory-latency-bound, and prefetch effectiveness or larger caches would help.
+  - name: "branch_mpki"
+    description: >
+      Branch misses per thousand instructions. Data-dependent branches in query evaluation,
+      row filtering, and index comparisons are hard to predict. Elevated branch MPKI (>3)
+      signals opportunity for branchless comparison techniques or improved branch predictor
+      table sizing.
+  - name: "lock_contention_pct"
+    description: >
+      Percentage of CPU cycles spent waiting on mutexes and spinlocks. InnoDB uses adaptive
+      mutexes for the buffer pool, lock manager, and redo log. At high thread counts this
+      becomes the primary scalability bottleneck; values above 15% suggest hardware-assisted
+      locking or NUMA-aware allocation would improve throughput.
+  - name: "io_latency_p99_us"
+    description: >
+      99th-percentile IO latency in microseconds. Commit-path fsync latency directly bounds
+      transaction throughput. This metric reveals whether the storage subsystem or IO scheduler
+      is introducing tail latency.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. OLTP workloads typically achieve 1.0-2.0 IPC due to pointer-
+      chasing memory access patterns. Significant drops below 1.0 at high concurrency usually
+      indicate memory stalls or lock-induced pipeline bubbles.
