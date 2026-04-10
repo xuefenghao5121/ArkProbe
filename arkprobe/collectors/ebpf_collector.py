@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,17 +65,64 @@ class LatencyHistogram:
 class EbpfCollector(BaseCollector):
     """eBPF-based system-level observation using BCC tools and bpftrace."""
 
+    # All BCC tools required by probes
+    BCC_TOOLS = [
+        "biolatency-bpfcc",
+        "cachestat-bpfcc",
+        "tcprtt-bpfcc",
+        "tcpconnlat-bpfcc",
+        "offcputime-bpfcc",
+    ]
+
     def __init__(self, output_dir: Path, backend: str = "auto"):
         super().__init__(output_dir)
         self.backend = backend
         self._bpftrace_available: Optional[bool] = None
         self._bcc_available: Optional[bool] = None
 
+    def is_available(self) -> tuple[bool, str]:
+        """Check if eBPF collection is possible.
+
+        Returns:
+            (available, reason): Whether eBPF can be used, and reason if not
+        """
+        # Check for BCC tools
+        if self._check_bcc():
+            return True, ""
+
+        # Check for bpftrace as fallback
+        if self._check_bpftrace():
+            return True, "bpftrace fallback"
+
+        # Determine what's missing
+        missing_tools = []
+        for tool in self.BCC_TOOLS:
+            if not shutil.which(tool):
+                missing_tools.append(tool)
+        if not self._check_bpftrace():
+            missing_tools.append("bpftrace")
+
+        reason = f"Missing tools: {', '.join(missing_tools[:3])}"
+        if len(missing_tools) > 3:
+            reason += f" (+{len(missing_tools) - 3} more)"
+        return False, reason
+
     def collect(self, pid: Optional[int] = None,
                 duration_sec: int = 30,
                 probes: Optional[List[str]] = None,
                 **kwargs) -> CollectionResult:
         """Run all configured eBPF probes."""
+        # Check availability first - fail gracefully if tools missing
+        available, reason = self.is_available()
+        if not available:
+            self.log.warning("eBPF collector not available: %s", reason)
+            return CollectionResult(
+                collector_name="ebpf",
+                data={},
+                raw_files={},
+                errors=[f"eBPF not available: {reason}"],
+            )
+
         if probes is None:
             probes = ["io_latency", "lock_contention", "offcpu",
                       "cache_stats", "tcp_latency"]
@@ -348,8 +396,9 @@ class EbpfCollector(BaseCollector):
         return self._bpftrace_available
 
     def _check_bcc(self) -> bool:
-        """Check if BCC tools are available."""
+        """Check if any BCC tool is available (at least one)."""
         if self._bcc_available is None:
-            result = run_cmd(["which", "biolatency-bpfcc"], timeout_sec=5)
-            self._bcc_available = result.ok
+            self._bcc_available = any(
+                shutil.which(tool) for tool in self.BCC_TOOLS
+            )
         return self._bcc_available

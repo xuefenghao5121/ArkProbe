@@ -24,6 +24,12 @@ INSTALL_HINTS: dict[str, str] = {
     # System tools
     "perf": "yum install perf -y",
     "bpftrace": "yum install bpftrace -y",
+    # BCC tools (io_latency, lock_contention, offcpu, cache_stats, tcp_latency)
+    "biolatency-bpfcc": "yum install bcc-tools -y  # or: apt install bpfcc-tools",
+    "cachestat-bpfcc": "yum install bcc-tools -y",
+    "tcprtt-bpfcc": "yum install bcc-tools -y",
+    "tcpconnlat-bpfcc": "yum install bcc-tools -y",
+    "offcputime-bpfcc": "yum install bcc-tools -y",
     "gcc": "yum install gcc -y",
 }
 
