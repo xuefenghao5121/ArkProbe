@@ -29,6 +29,40 @@ from ..utils.process import RunResult, run_cmd
 
 log = logging.getLogger(__name__)
 
+# Dangerous shell metacharacters that could enable command injection
+DANGEROUS_CHARS = set(";&|`$()<>\\\\")
+
+
+def validate_command_safety(command: str) -> tuple[bool, str]:
+    """Validate that a command string is safe to execute via shell.
+
+    Returns:
+        (is_safe, error_message) tuple. If is_safe is False, error_message explains why.
+    """
+    if not command:
+        return True, ""
+
+    # Check for dangerous shell metacharacters
+    found = [c for c in DANGEROUS_CHARS if c in command]
+    if found:
+        return False, f"Command contains dangerous shell metacharacters: {found}"
+
+    # Check for command chaining patterns
+    dangerous_patterns = [
+        r"\$\{",  # Variable expansion ${VAR}
+        r"\$\(",  # Command substitution $(cmd)
+        r"`",     # Backtick command substitution
+        r"\|\|",  # OR operator
+        r"&&",    # AND operator
+        r">>",    # Append redirect
+        r"2>",    # Stderr redirect
+    ]
+    for pattern in dangerous_patterns:
+        if re.search(pattern, command):
+            return False, f"Command contains dangerous pattern: {pattern}"
+
+    return True, ""
+
 
 @dataclass
 class PerfCounter:
@@ -116,6 +150,12 @@ class PerfCollector(BaseCollector):
 
         Uses JSON output (-j) and applies multiplexing correction.
         """
+        # Security: validate command before passing to shell
+        if command:
+            is_safe, error_msg = validate_command_safety(command)
+            if not is_safe:
+                raise ValueError(f"Unsafe command rejected: {error_msg}")
+
         event_str = build_perf_event_string(event_group, self.model.pmu_name)
         cmd = ["perf", "stat", "-x", ",", "-e", event_str, "-r", str(repeat)]
 
@@ -188,6 +228,12 @@ class PerfCollector(BaseCollector):
         output_file: Optional[str] = None,
     ) -> Path:
         """Run perf record for sampling-based profiling."""
+        # Security: validate command before passing to shell
+        if command:
+            is_safe, error_msg = validate_command_safety(command)
+            if not is_safe:
+                raise ValueError(f"Unsafe command rejected: {error_msg}")
+
         if output_file is None:
             output_file = str(self.output_dir / "perf.data")
 

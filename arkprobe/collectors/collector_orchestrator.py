@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .base import CollectionResult
 from .ebpf_collector import EbpfCollector
-from .perf_collector import PerfCollector
+from .perf_collector import PerfCollector, validate_command_safety
 from .system_collector import SystemCollector
 
 log = logging.getLogger(__name__)
@@ -203,6 +203,10 @@ class CollectorOrchestrator:
 
             # Get throughput from workload output
             from ..utils.process import run_cmd
+            # Security: validate command before shell execution
+            is_safe, error_msg = validate_command_safety(command)
+            if not is_safe:
+                raise ValueError(f"Unsafe command rejected: {error_msg}")
             wl_result = run_cmd(
                 ["sh", "-c", command],
                 timeout_sec=120,
