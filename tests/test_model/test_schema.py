@@ -15,6 +15,7 @@ from arkprobe.model.schema import (
     InstructionMix,
     MemorySubsystem,
     NetworkCharacteristics,
+    PowerThermal,
     TopDownL1,
     WorkloadFeatureVector,
 )
@@ -110,3 +111,76 @@ class TestEnums:
 
     def test_bottleneck_categories(self):
         assert BottleneckCategory.BACKEND_MEMORY_BOUND.value == "backend_memory_bound"
+
+
+class TestPowerThermal:
+    def test_create_empty(self):
+        """PowerThermal can be created with no data (all fields optional)."""
+        pt = PowerThermal()
+        assert pt.cpu_power_w is None
+        assert pt.cpu_temp_c is None
+        assert pt.c0_residency is None
+
+    def test_create_with_power(self):
+        """PowerThermal with power metrics."""
+        pt = PowerThermal(
+            cpu_power_w=125.5,
+            dram_power_w=15.2,
+            total_power_w=180.0,
+        )
+        assert pt.cpu_power_w == 125.5
+        assert pt.dram_power_w == 15.2
+        assert pt.total_power_w == 180.0
+
+    def test_create_with_temperature(self):
+        """PowerThermal with temperature metrics."""
+        pt = PowerThermal(
+            cpu_temp_c=65.0,
+            cpu_temp_max_c=95.0,
+            dram_temp_c=45.0,
+        )
+        assert pt.cpu_temp_c == 65.0
+        assert pt.cpu_temp_max_c == 95.0
+
+    def test_create_with_cstate(self):
+        """PowerThermal with C-state residency."""
+        pt = PowerThermal(
+            c0_residency=0.75,
+            c1_residency=0.15,
+            c6_residency=0.10,
+        )
+        assert pt.c0_residency == 0.75
+        assert pt.c1_residency == 0.15
+        assert pt.c6_residency == 0.10
+
+    def test_cstate_residency_bounds(self):
+        """C-state residency must be between 0 and 1."""
+        with pytest.raises(Exception):
+            PowerThermal(c0_residency=1.5)  # > 1.0 should fail
+        with pytest.raises(Exception):
+            PowerThermal(c0_residency=-0.1)  # < 0 should fail
+
+    def test_create_with_frequency(self):
+        """PowerThermal with frequency stats."""
+        pt = PowerThermal(
+            avg_freq_mhz=2400.0,
+            min_freq_mhz=1200.0,
+            max_freq_mhz=3000.0,
+        )
+        assert pt.avg_freq_mhz == 2400.0
+        assert pt.min_freq_mhz == 1200.0
+        assert pt.max_freq_mhz == 3000.0
+
+    def test_feature_vector_with_power_thermal(self):
+        """WorkloadFeatureVector can include PowerThermal."""
+        fv = make_sample_fv(
+            power_thermal=PowerThermal(
+                cpu_power_w=100.0,
+                cpu_temp_c=60.0,
+                c0_residency=0.80,
+            )
+        )
+        assert fv.power_thermal is not None
+        assert fv.power_thermal.cpu_power_w == 100.0
+        assert fv.power_thermal.cpu_temp_c == 60.0
+        assert fv.power_thermal.c0_residency == 0.80

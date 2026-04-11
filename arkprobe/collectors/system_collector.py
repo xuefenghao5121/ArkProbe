@@ -56,6 +56,11 @@ class SystemCollector(BaseCollector):
         except Exception as e:
             errors.append(f"platform_config: {e}")
 
+        try:
+            data["power_thermal"] = self.collect_power_thermal(duration_sec)
+        except Exception as e:
+            errors.append(f"power_thermal: {e}")
+
         raw_path = self._save_raw(
             "system_metrics.json",
             json.dumps(data, indent=2, default=str),
@@ -460,6 +465,277 @@ class SystemCollector(BaseCollector):
         cfg["mount_options"] = mount_opts
 
         return cfg
+
+    # -------------------------------------------------------------------
+    # Power and thermal metrics
+    # -------------------------------------------------------------------
+
+    def collect_power_thermal(self, duration_sec: int = 10) -> Dict[str, Any]:
+        """Collect power consumption, temperature, and C-state residency.
+
+        Data sources:
+        - /sys/class/hwmon (hardware monitoring sensors)
+        - /sys/class/thermal (thermal zones)
+        - /sys/devices/system/cpu/cpu*/cpuidle (C-state statistics)
+        - /sys/devices/system/cpu/cpu*/cpufreq (frequency stats)
+        """
+        result: Dict[str, Any] = {}
+
+        # Power and temperature from hwmon
+        hwmon_data = self._collect_hwmon()
+        result.update(hwmon_data)
+
+        # Thermal zones
+        thermal_data = self._collect_thermal_zones()
+        result.update(thermal_data)
+
+        # C-state residency
+        cstate_data = self._collect_cstate_residency(duration_sec)
+        result.update(cstate_data)
+
+        # Frequency stats
+        freq_data = self._collect_frequency_stats()
+        result.update(freq_data)
+
+        return result
+
+    def _collect_hwmon(self) -> Dict[str, Any]:
+        """Collect from /sys/class/hwmon (hardware monitoring sensors)."""
+        result: Dict[str, Any] = {}
+        hwmon_base = Path("/sys/class/hwmon")
+
+        if not hwmon_base.exists():
+            return result
+
+        for hwmon_dir in sorted(hwmon_base.iterdir()):
+            if not hwmon_dir.is_dir():
+                continue
+
+            # Get device name
+            name_path = hwmon_dir / "name"
+            if not name_path.exists():
+                continue
+            device_name = name_path.read_text().strip().lower()
+
+            # Look for power sensors (power*_input, in microwatts)
+            for power_file in hwmon_dir.glob("power*_input"):
+                try:
+                    power_uw = int(power_file.read_text().strip())
+                    power_w = power_uw / 1_000_000.0
+
+                    # Classify by device name or sensor name
+                    sensor_name = power_file.stem.replace("_input", "")
+                    if "cpu" in device_name or "cpu" in sensor_name:
+                        if result.get("cpu_power_w") is None:
+                            result["cpu_power_w"] = power_w
+                    elif "dram" in device_name or "mem" in sensor_name:
+                        if result.get("dram_power_w") is None:
+                            result["dram_power_w"] = power_w
+                    elif "gpu" in device_name:
+                        if result.get("gpu_power_w") is None:
+                            result["gpu_power_w"] = power_w
+                    else:
+                        # Total or other
+                        if result.get("total_power_w") is None:
+                            result["total_power_w"] = power_w
+                except (OSError, ValueError):
+                    pass
+
+            # Look for temperature sensors (temp*_input, in millidegrees)
+            for temp_file in hwmon_dir.glob("temp*_input"):
+                try:
+                    temp_mc = int(temp_file.read_text().strip())
+                    temp_c = temp_mc / 1000.0
+
+                    sensor_name = temp_file.stem.replace("_input", "")
+                    if "cpu" in device_name or "cpu" in sensor_name or "core" in sensor_name:
+                        if result.get("cpu_temp_c") is None:
+                            result["cpu_temp_c"] = temp_c
+                    elif "dram" in device_name or "mem" in sensor_name:
+                        if result.get("dram_temp_c") is None:
+                            result["dram_temp_c"] = temp_c
+                    elif "mobo" in device_name or "board" in sensor_name or "ambient" in sensor_name:
+                        if result.get("motherboard_temp_c") is None:
+                            result["motherboard_temp_c"] = temp_c
+                except (OSError, ValueError):
+                    pass
+
+            # Look for max temperature thresholds (temp*_max)
+            for temp_max_file in hwmon_dir.glob("temp*_max"):
+                try:
+                    temp_mc = int(temp_max_file.read_text().strip())
+                    temp_c = temp_mc / 1000.0
+                    sensor_name = temp_max_file.stem.replace("_max", "")
+                    if "cpu" in device_name or "cpu" in sensor_name:
+                        if result.get("cpu_temp_max_c") is None:
+                            result["cpu_temp_max_c"] = temp_c
+                except (OSError, ValueError):
+                    pass
+
+        return result
+
+    def _collect_thermal_zones(self) -> Dict[str, Any]:
+        """Collect from /sys/class/thermal (thermal zones)."""
+        result: Dict[str, Any] = {}
+        thermal_base = Path("/sys/class/thermal")
+
+        if not thermal_base.exists():
+            return result
+
+        for zone_dir in sorted(thermal_base.iterdir()):
+            if not zone_dir.name.startswith("thermal_zone"):
+                continue
+
+            try:
+                type_path = zone_dir / "type"
+                if not type_path.exists():
+                    continue
+                zone_type = type_path.read_text().strip().lower()
+
+                temp_path = zone_dir / "temp"
+                if temp_path.exists():
+                    temp_mc = int(temp_path.read_text().strip())
+                    temp_c = temp_mc / 1000.0
+
+                    # Map zone type to result field
+                    if "cpu" in zone_type or "core" in zone_type:
+                        if result.get("cpu_temp_c") is None:
+                            result["cpu_temp_c"] = temp_c
+                    elif "dram" in zone_type or "mem" in zone_type:
+                        if result.get("dram_temp_c") is None:
+                            result["dram_temp_c"] = temp_c
+                    elif "mobo" in zone_type or "board" in zone_type:
+                        if result.get("motherboard_temp_c") is None:
+                            result["motherboard_temp_c"] = temp_c
+            except (OSError, ValueError):
+                pass
+
+        return result
+
+    def _collect_cstate_residency(self, duration_sec: int) -> Dict[str, Any]:
+        """Collect C-state residency from /sys/devices/system/cpu/cpu*/cpuidle."""
+        result: Dict[str, Any] = {}
+        cpu_base = Path("/sys/devices/system/cpu")
+
+        if not cpu_base.exists():
+            return result
+
+        # Collect initial C-state times
+        before = self._read_cstate_times()
+        time.sleep(duration_sec)
+        after = self._read_cstate_times()
+
+        # Calculate residency percentages
+        total_time = 0
+        for state in before:
+            delta = after.get(state, 0) - before.get(state, 0)
+            if delta > 0:
+                total_time += delta
+
+        if total_time > 0:
+            for state in before:
+                delta = after.get(state, 0) - before.get(state, 0)
+                residency = delta / total_time if delta > 0 else 0.0
+
+                # Map state name to result field
+                state_lower = state.lower()
+                if "c0" in state_lower or state_lower == "poll":
+                    result["c0_residency"] = round(residency, 4)
+                elif "c1" in state_lower:
+                    result["c1_residency"] = round(residency, 4)
+                elif "c2" in state_lower:
+                    result["c2_residency"] = round(residency, 4)
+                elif "c3" in state_lower:
+                    result["c3_residency"] = round(residency, 4)
+                elif "c6" in state_lower or "c7" in state_lower:
+                    result["c6_residency"] = round(residency, 4)
+
+        return result
+
+    def _read_cstate_times(self) -> Dict[str, int]:
+        """Read current C-state times (in microseconds) for all CPUs."""
+        cstate_times: Dict[str, int] = {}
+        cpu_base = Path("/sys/devices/system/cpu")
+
+        for cpu_dir in sorted(cpu_base.iterdir()):
+            if not cpu_dir.name.startswith("cpu"):
+                continue
+            if not cpu_dir.name[3:].isdigit():
+                continue
+
+            cpuidle_dir = cpu_dir / "cpuidle"
+            if not cpuidle_dir.exists():
+                continue
+
+            for state_dir in sorted(cpuidle_dir.iterdir()):
+                if not state_dir.name.startswith("state"):
+                    continue
+
+                name_path = state_dir / "name"
+                time_path = state_dir / "time"
+
+                if name_path.exists() and time_path.exists():
+                    try:
+                        state_name = name_path.read_text().strip()
+                        time_us = int(time_path.read_text().strip())
+                        # Aggregate across all CPUs
+                        cstate_times[state_name] = cstate_times.get(state_name, 0) + time_us
+                    except (OSError, ValueError):
+                        pass
+
+        return cstate_times
+
+    def _collect_frequency_stats(self) -> Dict[str, Any]:
+        """Collect CPU frequency statistics."""
+        result: Dict[str, Any] = {}
+        cpu_base = Path("/sys/devices/system/cpu")
+
+        if not cpu_base.exists():
+            return result
+
+        freqs = []
+        for cpu_dir in sorted(cpu_base.iterdir()):
+            if not cpu_dir.name.startswith("cpu"):
+                continue
+            if not cpu_dir.name[3:].isdigit():
+                continue
+
+            cpufreq_dir = cpu_dir / "cpufreq"
+            if not cpufreq_dir.exists():
+                continue
+
+            # Current frequency
+            cur_freq_path = cpufreq_dir / "scaling_cur_freq"
+            if cur_freq_path.exists():
+                try:
+                    freq_khz = int(cur_freq_path.read_text().strip())
+                    freqs.append(freq_khz / 1000.0)  # Convert to MHz
+                except (OSError, ValueError):
+                    pass
+
+        if freqs:
+            result["avg_freq_mhz"] = round(sum(freqs) / len(freqs), 1)
+            result["min_freq_mhz"] = round(min(freqs), 1)
+            result["max_freq_mhz"] = round(max(freqs), 1)
+
+        # Check for thermal throttling via thermal_zone
+        thermal_base = Path("/sys/class/thermal")
+        if thermal_base.exists():
+            for zone_dir in thermal_base.iterdir():
+                if not zone_dir.name.startswith("thermal_zone"):
+                    continue
+                # Check for throttling indicator
+                # Some systems expose throttling state
+                throttle_path = zone_dir / "cdev0_cur_state"
+                if throttle_path.exists():
+                    try:
+                        state = int(throttle_path.read_text().strip())
+                        if state > 0:
+                            result["thermal_throttling_pct"] = min(100.0, state * 10.0)
+                    except (OSError, ValueError):
+                        pass
+
+        return result
 
     # -------------------------------------------------------------------
     # Private helpers

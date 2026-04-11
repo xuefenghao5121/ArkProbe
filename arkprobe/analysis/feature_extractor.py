@@ -23,6 +23,7 @@ from ..model.schema import (
     MemorySubsystem,
     NetworkCharacteristics,
     PlatformConfigSnapshot,
+    PowerThermal,
     TopDownL1,
     TopDownL2,
     WorkloadFeatureVector,
@@ -61,6 +62,7 @@ class FeatureExtractor:
         io = self._extract_io(ebpf, system)
         network = self._extract_network(ebpf, system)
         concurrency = self._extract_concurrency(ebpf, system)
+        power_thermal = self._extract_power_thermal(system)
         platform_config = self._extract_platform_config(system)
 
         # Enrich with eBPF data
@@ -81,6 +83,7 @@ class FeatureExtractor:
             io=io,
             network=network,
             concurrency=concurrency,
+            power_thermal=power_thermal,
             platform_config=platform_config,
         )
 
@@ -337,6 +340,42 @@ class FeatureExtractor:
             futex_wait_time_us=lock_data.get("avg_wait_ns", 0) / 1000
                                if lock_data.get("avg_wait_ns") is not None else None,
         )
+
+    # -----------------------------------------------------------------------
+    # Power and thermal characteristics
+    # -----------------------------------------------------------------------
+
+    def _extract_power_thermal(
+        self, system: Dict[str, Any]
+    ) -> Optional[PowerThermal]:
+        """Extract power and thermal characteristics from system data."""
+        pt_data = system.get("power_thermal")
+        if pt_data is None:
+            return None
+
+        try:
+            return PowerThermal(
+                cpu_power_w=pt_data.get("cpu_power_w"),
+                gpu_power_w=pt_data.get("gpu_power_w"),
+                dram_power_w=pt_data.get("dram_power_w"),
+                total_power_w=pt_data.get("total_power_w"),
+                cpu_temp_c=pt_data.get("cpu_temp_c"),
+                cpu_temp_max_c=pt_data.get("cpu_temp_max_c"),
+                dram_temp_c=pt_data.get("dram_temp_c"),
+                motherboard_temp_c=pt_data.get("motherboard_temp_c"),
+                c0_residency=pt_data.get("c0_residency"),
+                c1_residency=pt_data.get("c1_residency"),
+                c2_residency=pt_data.get("c2_residency"),
+                c3_residency=pt_data.get("c3_residency"),
+                c6_residency=pt_data.get("c6_residency"),
+                avg_freq_mhz=pt_data.get("avg_freq_mhz"),
+                min_freq_mhz=pt_data.get("min_freq_mhz"),
+                max_freq_mhz=pt_data.get("max_freq_mhz"),
+                thermal_throttling_pct=pt_data.get("thermal_throttling_pct"),
+            )
+        except Exception as e:
+            log.warning("Failed to parse power_thermal: %s", e)
+            return None
 
     # -----------------------------------------------------------------------
     # Platform configuration

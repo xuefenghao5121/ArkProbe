@@ -205,6 +205,52 @@ class PlatformConfigSnapshot(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Power and thermal characteristics
+# ---------------------------------------------------------------------------
+
+class PowerThermal(BaseModel):
+    """Power consumption and thermal characteristics.
+
+    Data sources:
+    - /sys/class/hwmon (hardware monitoring sensors)
+    - /sys/class/thermal (thermal zones)
+    - /sys/devices/system/cpu/cpu*/cpuidle (C-state residency)
+    """
+    # Power metrics (watts)
+    cpu_power_w: Optional[float] = Field(None, description="CPU package power (watts)")
+    gpu_power_w: Optional[float] = Field(None, description="GPU power if present (watts)")
+    dram_power_w: Optional[float] = Field(None, description="DRAM power (watts)")
+    total_power_w: Optional[float] = Field(None, description="Total system power (watts)")
+
+    # Temperature metrics (celsius)
+    cpu_temp_c: Optional[float] = Field(None, description="CPU temperature (celsius)")
+    cpu_temp_max_c: Optional[float] = Field(None, description="CPU max temperature threshold")
+    dram_temp_c: Optional[float] = Field(None, description="DRAM temperature if available")
+    motherboard_temp_c: Optional[float] = Field(None, description="Motherboard/ambient temperature")
+
+    # C-state residency (fraction of time in each state)
+    c0_residency: Optional[float] = Field(None, ge=0.0, le=1.0,
+                                          description="Fraction of time in C0 (active)")
+    c1_residency: Optional[float] = Field(None, ge=0.0, le=1.0,
+                                          description="Fraction of time in C1 (halt)")
+    c2_residency: Optional[float] = Field(None, ge=0.0, le=1.0,
+                                          description="Fraction of time in C2 (stop-clock)")
+    c3_residency: Optional[float] = Field(None, ge=0.0, le=1.0,
+                                          description="Fraction of time in C3 (deep sleep)")
+    c6_residency: Optional[float] = Field(None, ge=0.0, le=1.0,
+                                          description="Fraction of time in C6 (deepest)")
+
+    # P-state / frequency
+    avg_freq_mhz: Optional[float] = Field(None, description="Average CPU frequency (MHz)")
+    min_freq_mhz: Optional[float] = Field(None, description="Minimum frequency observed")
+    max_freq_mhz: Optional[float] = Field(None, description="Maximum frequency observed")
+
+    # Thermal throttling
+    thermal_throttling_pct: Optional[float] = Field(None, ge=0.0, le=100.0,
+                                                    description="Time spent thermally throttled")
+
+
+# ---------------------------------------------------------------------------
 # The unified feature vector
 # ---------------------------------------------------------------------------
 
@@ -232,6 +278,7 @@ class WorkloadFeatureVector(BaseModel):
     io: IOCharacteristics
     network: NetworkCharacteristics
     concurrency: ConcurrencyProfile
+    power_thermal: Optional[PowerThermal] = None
     scalability: Optional[ScalabilityProfile] = None
 
     # -- Derived (computed by analysis engine) --
