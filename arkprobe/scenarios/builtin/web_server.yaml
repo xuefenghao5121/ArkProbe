@@ -1,0 +1,66 @@
+# Web Server Micro-Kernel (builtin)
+# Simulates key characteristics of high-performance web servers (Nginx/Envoy style).
+
+scenario:
+  name: "Web Server Micro-Kernel (builtin)"
+  type: microservice
+  builtin: true
+  description: |
+    Web server micro-kernel workload modeling Nginx/Envoy patterns:
+    - Connection handling: Accept/dispatch pattern with event loops
+    - HTTP parsing: Header parsing with string operations
+    - Routing: Hash-based URL routing with pattern matching
+    - Response generation: Template rendering with variable substitution
+
+    Produces high branch misprediction (parsing, routing), string operations,
+    random memory access (hash lookups), and mixed compute/memory patterns.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_webserver} --threads {thread_count} --duration {duration} --connections 10000"
+  teardown: []
+  target_process: "arkprobe_webserver"
+  throughput_metric: "RPS"
+  throughput_regex: 'RPS:\s+(\d+\.?\d*)\s+req/sec'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - memory_access
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "branch_mpki"
+    description: >
+      Branch mispredictions per thousand instructions. HTTP parsing
+      and routing decisions cause high branch misprediction rates.
+  - name: "ipc"
+    description: >
+      Instructions per cycle. Web servers show moderate IPC due to
+      mixed compute (parsing) and memory (routing) operations.
+  - name: "l1i_mpki"
+    description: >
+      L1I misses per thousand instructions. HTTP parsing code paths
+      are complex and may cause instruction cache misses.
+  - name: "retiring_pct"
+    description: >
+      Retiring percentage. Web servers typically have good retiring
+      rates due to predictable parsing loops.

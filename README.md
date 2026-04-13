@@ -69,6 +69,9 @@ arkprobe collect -s database_oltp --skip-ebpf
 | Mixed Workload | mixed | 计算+访存交替 | IPC, cache miss rate |
 | STREAM Benchmark | memory_bound | 标准 COPY/SCALE/ADD/TRIAD | 内存带宽利用率 |
 | Random Access | memory_bound | 随机指针追踪 | 内存延迟, TLB MPKI |
+| Database OLTP | database_oltp | 锁竞争/B+tree/WAL 微内核 | 锁等待, L3 MPKI, branch MPKI |
+| Key-Value Store | database_kv | 哈希表/LRU/GET/SET 微内核 | L1D MPKI, TLB MPKI |
+| Web Server | microservice | HTTP解析/路由/响应 微内核 | branch MPKI, IPC |
 
 ### 外部场景（需依赖工具）
 
@@ -195,6 +198,22 @@ ruff check arkprobe/ tests/
 | 鲲鹏 930 | TaiShan V200 | 8-wide | 6 + 1 fixed | NEON + SVE |
 
 ## 更新日志
+
+### v0.2.6 (2026-04-13)
+
+**New Feature: 真实场景微内核负载**
+- 新增 Database OLTP 微内核（`oltp.c`）：模拟锁竞争、B+tree 遍历、WAL 写入
+- 新增 Key-Value Store 微内核（`kvstore.c`）：模拟哈希表查找、LRU 淘汰、GET/SET 操作
+- 新增 Web Server 微内核（`webserver.c`）：模拟 HTTP 解析、路由匹配、响应生成
+- 内置场景从 5 个扩展到 8 个
+
+**微内核设计特点**
+- 基于真实负载特征设计，提取关键行为模式
+- 锁竞争模拟：Row-level mutex + lock hash table
+- B+tree 遍历：随机树遍历，cache-unfriendly 访问
+- 哈希表查找：随机访问 + 高碰撞率
+- HTTP 解析：Header 解析 + 字符串操作
+- 路由匹配：Hash-based URL 路由
 
 ### v0.2.5 (2026-04-13)
 

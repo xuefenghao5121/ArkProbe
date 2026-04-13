@@ -1,0 +1,66 @@
+# Database OLTP Micro-Kernel (builtin)
+# Simulates key characteristics of OLTP workloads: lock contention, B+tree traversal, WAL writes.
+
+scenario:
+  name: "Database OLTP Micro-Kernel (builtin)"
+  type: database_oltp
+  builtin: true
+  description: |
+    Database OLTP micro-kernel workload modeling key characteristics:
+    - Lock contention: Row-level mutex simulation with random hold times
+    - B+tree index traversal: Random tree walks with cache-unfriendly access
+    - WAL writes: Sequential append-only writes (log buffer)
+    - Buffer pool: Mixed hot/cold page access patterns (zipfian)
+
+    Produces high lock contention (futex waits), random cache misses,
+    sequential write bandwidth, and mixed instruction mix.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_oltp} --threads {thread_count} --duration {duration} --rows 100000"
+  teardown: []
+  target_process: "arkprobe_oltp"
+  throughput_metric: "TPS"
+  throughput_regex: 'TPS:\s+(\d+\.?\d*)\s+tx/sec'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - memory_access
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "lock_contention"
+    description: >
+      Lock wait time indicates contention level. OLTP workloads with
+      high contention show significant futex wait times and context switches.
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. B+tree traversal causes
+      random cache misses, especially for index pages.
+  - name: "backend_bound_pct"
+    description: >
+      Backend stall ratio. OLTP is often memory-bound due to buffer pool
+      access and index lookups.
+  - name: "branch_mpki"
+    description: >
+      Branch mispredictions per thousand instructions. B+tree traversal
+      and comparison operations cause branch mispredictions.

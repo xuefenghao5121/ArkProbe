@@ -24,6 +24,9 @@ WORKLOAD_SOURCES = {
     "mixed": "mixed.c",
     "stream": "stream.c",
     "random": "random.c",
+    "oltp": "oltp.c",
+    "kvstore": "kvstore.c",
+    "webserver": "webserver.c",
 }
 
 BINARY_PREFIX = "arkprobe_"
