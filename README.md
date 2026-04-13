@@ -60,6 +60,18 @@ arkprobe collect -s database_oltp --skip-ebpf
 
 ## 预置场景
 
+### 内置场景（零依赖）
+
+| 场景 | 类型 | 描述 | 关键关注指标 |
+|------|------|------|-------------|
+| Compute Intensive | compute_bound | 矩阵乘法，高 IPC | IPC, retiring, SIMD |
+| Memory Intensive | memory_bound | 流式拷贝 + 指针追踪 | L3 MPKI, backend_bound |
+| Mixed Workload | mixed | 计算+访存交替 | IPC, cache miss rate |
+| STREAM Benchmark | memory_bound | 标准 COPY/SCALE/ADD/TRIAD | 内存带宽利用率 |
+| Random Access | memory_bound | 随机指针追踪 | 内存延迟, TLB MPKI |
+
+### 外部场景（需依赖工具）
+
 | 场景 | 类型 | 典型负载 | 关键关注指标 |
 |------|------|---------|-------------|
 | MySQL OLTP | database_oltp | sysbench oltp_read_write | L3 MPKI, 锁竞争, IO延迟 |
@@ -183,6 +195,22 @@ ruff check arkprobe/ tests/
 | 鲲鹏 930 | TaiShan V200 | 8-wide | 6 + 1 fixed | NEON + SVE |
 
 ## 更新日志
+
+### v0.2.5 (2026-04-13)
+
+**New Feature: Uncore PMU 采集**
+- 新增 `PerfCollector.collect_uncore()` 方法采集 DDR 控制器带宽和 L3 uncore 统计
+- 使用鲲鹏 Uncore PMU 事件（hisi_sccl_ddrc/hisi_sccl_l3c）获取实际内存带宽数据
+- `MemorySubsystem.bandwidth_read_gbps/write_gbps/utilization` 现已填充实际测量值
+
+**New Feature: 内置负载扩展**
+- 新增 STREAM 基准测试（COPY/SCALE/ADD/TRIAD）用于标准内存带宽测量
+- 新增随机访问负载用于内存延迟测量（指针追踪）
+- 内置场景从 3 个扩展到 5 个
+
+**采集流程优化**
+- 采集流程新增 Phase 4: Uncore PMU 采集
+- Uncore 采集为可选，失败不影响整体采集
 
 ### v0.2.4 (2026-04-11)
 
