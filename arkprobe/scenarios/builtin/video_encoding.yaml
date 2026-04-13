@@ -1,0 +1,62 @@
+# Video Encoding Micro-Kernel (builtin)
+# Simulates H.264/H.265 video encoding operations.
+
+scenario:
+  name: "Video Encoding (builtin)"
+  type: compute_bound
+  builtin: true
+  description: |
+    Video encoding micro-kernel workload modeling:
+    - DCT transform: 8x8 block DCT for intra prediction residual
+    - Motion estimation: Integer pixel search with SAD computation
+    - Intra prediction: Mode selection from neighboring pixels
+    - Quantization: Division-based coefficient quantization
+
+    Produces high compute intensity, SIMD-friendly operations,
+    mixed memory access, branch-heavy code paths for mode decisions.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_videoenc} --threads {thread_count} --duration {duration}"
+  teardown: []
+  target_process: "arkprobe_videoenc"
+  throughput_metric: "FPS"
+  throughput_regex: 'FPS:\s+(\d+\.?\d*)\s+frames/sec'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "ipc"
+    description: >
+      Instructions per cycle. Video encoding is compute-intensive
+      with DCT and SAD operations.
+  - name: "fp_ratio"
+    description: >
+      FP instruction ratio. DCT operations use floating-point math.
+  - name: "simd_utilization"
+    description: >
+      SIMD utilization. DCT and SAD are SIMD-friendly operations.
+  - name: "branch_mpki"
+    description: >
+      Branch mispredictions. Mode decisions cause branch-heavy code.

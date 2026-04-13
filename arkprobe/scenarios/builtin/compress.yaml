@@ -1,0 +1,61 @@
+# Compression Micro-Kernel (builtin)
+# Simulates LZ77/ZSTD-style compression operations.
+
+scenario:
+  name: "Compression Operations (builtin)"
+  type: mixed
+  builtin: true
+  description: |
+    Compression micro-kernel workload modeling:
+    - Sliding window: Hash table lookups for match finding
+    - Literal copying: Memory copy for unmatched data
+    - Match encoding: Variable-length encoding of (offset, length) pairs
+    - Hash chain traversal: Pointer chasing for best matches
+
+    Produces mixed compute/memory patterns, hash table lookups,
+    sequential and random memory access, branch-heavy code paths.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_compress} --threads {thread_count} --duration {duration} --level 3"
+  teardown: []
+  target_process: "arkprobe_compress"
+  throughput_metric: "MB/s"
+  throughput_regex: 'Throughput:\s+(\d+\.?\d*)\s+MB/s'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - memory_access
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "branch_mpki"
+    description: >
+      Branch mispredictions per thousand instructions. Compression has
+      branch-heavy code paths (match/no-match decisions).
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. Hash chain traversal causes
+      random memory access patterns.
+  - name: "backend_bound_pct"
+    description: >
+      Backend stall ratio. Compression is mixed compute/memory-bound.

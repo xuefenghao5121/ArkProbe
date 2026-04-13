@@ -27,6 +27,10 @@ WORKLOAD_SOURCES = {
     "oltp": "oltp.c",
     "kvstore": "kvstore.c",
     "webserver": "webserver.c",
+    "crypto": "crypto.c",
+    "compress": "compress.c",
+    "videoenc": "videoenc.c",
+    "ml_inference": "ml_inference.c",
 }
 
 BINARY_PREFIX = "arkprobe_"

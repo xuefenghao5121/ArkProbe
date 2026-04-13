@@ -1,0 +1,65 @@
+# Machine Learning Inference Micro-Kernel (builtin)
+# Simulates neural network inference operations.
+
+scenario:
+  name: "ML Inference (builtin)"
+  type: compute_bound
+  builtin: true
+  description: |
+    Machine learning inference micro-kernel workload modeling:
+    - Matrix multiplication: Dense GEMM for fully connected layers
+    - Convolution: 2D convolution for CNN layers
+    - Activation functions: ReLU, sigmoid, tanh
+    - Pooling: Max/Average pooling
+    - Batch normalization: Scale and shift operations
+
+    Produces high compute intensity, SIMD-friendly operations,
+    sequential memory access (weights), predictable loops.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_ml_inference} --threads {thread_count} --duration {duration}"
+  teardown: []
+  target_process: "arkprobe_ml_inference"
+  throughput_metric: "inf/sec"
+  throughput_regex: 'Inferences:\s+(\d+\.?\d*)\s+inf/sec'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "ipc"
+    description: >
+      Instructions per cycle. ML inference is compute-intensive
+      with GEMM and convolution operations.
+  - name: "fp_ratio"
+    description: >
+      FP instruction ratio. Matrix operations use floating-point math.
+  - name: "retiring_pct"
+    description: >
+      Retiring percentage. ML inference should have high retiring
+      due to predictable loop structures.
+  - name: "l3_mpki"
+    description: >
+      L3 misses. Weight matrices may cause cache pressure
+      for large models.

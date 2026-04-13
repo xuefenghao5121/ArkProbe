@@ -1,0 +1,60 @@
+# Cryptographic Operations Micro-Kernel (builtin)
+# Simulates AES encryption and SHA-256 hashing operations.
+
+scenario:
+  name: "Cryptographic Operations (builtin)"
+  type: compute_bound
+  builtin: true
+  description: |
+    Cryptographic micro-kernel workload modeling:
+    - AES-like encryption: S-Box lookups, XOR operations, byte shuffling
+    - SHA-256 hashing: Bit rotations, message schedule, compression
+    - Mixed mode: Random selection between AES and SHA-256
+
+    Produces high compute intensity, heavy bit manipulation,
+    low branch misprediction, and SIMD-friendly operations.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_crypto} --threads {thread_count} --duration {duration} --mode mixed"
+  teardown: []
+  target_process: "arkprobe_crypto"
+  throughput_metric: "MB/s"
+  throughput_regex: 'Throughput:\s+(\d+\.?\d*)\s+MB/s'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "ipc"
+    description: >
+      Instructions per cycle. Crypto workloads typically have high IPC
+      due to compute-bound nature and predictable access patterns.
+  - name: "retiring_pct"
+    description: >
+      Retiring percentage. Crypto operations should show high retiring
+      due to efficient pipeline utilization.
+  - name: "l1d_mpki"
+    description: >
+      L1D misses per thousand instructions. S-Box lookups may cause
+      some cache misses but overall should be low.
