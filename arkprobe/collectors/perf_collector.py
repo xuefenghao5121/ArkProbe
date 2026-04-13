@@ -23,6 +23,7 @@ from .arm_events import (
     build_perf_event_string,
     get_all_core_event_groups,
     get_kunpeng_model,
+    resolve_uncore_events,
 )
 from .base import BaseCollector, CollectionResult
 from ..utils.process import RunResult, run_cmd
@@ -448,3 +449,192 @@ class PerfCollector(BaseCollector):
 
         self.log.info("Detected %d available PMU events", len(self._available_events))
         return self._available_events
+
+    # -----------------------------------------------------------------------
+    # Uncore PMU collection (DDR bandwidth, L3 cache)
+    # -----------------------------------------------------------------------
+
+    def collect_uncore(
+        self,
+        duration_sec: int = 30,
+        sccl_ids: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """Collect uncore PMU events for DDR bandwidth and L3 cache stats.
+
+        Kunpeng uncore PMUs provide:
+        - DDR controller read/write counts (flux_rd, flux_wr)
+        - L3 cache hit/miss from uncore perspective
+
+        Args:
+            duration_sec: Collection duration
+            sccl_ids: SCCL (Super CPU Cluster) IDs to monitor.
+                      Default: [1, 3, 5, 7] for 4-socket Kunpeng 920
+
+        Returns:
+            Dict with 'ddr_bandwidth' and 'l3_cache_uncore' data
+        """
+        result: Dict[str, Any] = {}
+
+        # Collect DDR bandwidth
+        ddr_data = self._collect_ddr_bandwidth(duration_sec, sccl_ids)
+        if ddr_data:
+            result["ddr_bandwidth"] = ddr_data
+
+        # Collect L3 uncore stats
+        l3_data = self._collect_l3_uncore(duration_sec, sccl_ids)
+        if l3_data:
+            result["l3_cache_uncore"] = l3_data
+
+        return result
+
+    def _collect_ddr_bandwidth(
+        self,
+        duration_sec: int,
+        sccl_ids: Optional[List[int]] = None,
+    ) -> Dict[str, float]:
+        """Collect DDR controller bandwidth using uncore PMU.
+
+        Kunpeng DDR controller events:
+        - flux_rd: Number of read beats (32 bytes each)
+        - flux_wr: Number of write beats (32 bytes each)
+        """
+        if sccl_ids is None:
+            sccl_ids = [1, 3, 5, 7]  # Default 4-socket
+
+        # Resolve uncore events for all DDR controllers
+        group = UNCORE_EVENT_GROUPS["ddr_bandwidth"]
+        events = resolve_uncore_events(group, sccl_ids, unit_ids=[0, 1, 2, 3])
+
+        # Build perf command
+        event_str = ",".join(events)
+        cmd = [
+            "perf", "stat", "-x", ",", "-e", event_str,
+            "-a", "--", "sleep", str(duration_sec),
+        ]
+
+        result = run_cmd(cmd, timeout_sec=duration_sec + 60)
+        if not result.ok:
+            self.log.warning("Uncore DDR collection failed: %s", result.stderr[:200])
+            return {}
+
+        # Parse results
+        total_read_beats = 0
+        total_write_beats = 0
+
+        for line in result.stderr.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+
+            try:
+                value = float(parts[0].replace(",", ""))
+            except ValueError:
+                continue
+
+            event_name = parts[2].strip() if len(parts) > 2 else ""
+            if "flux_rd" in event_name:
+                total_read_beats += value
+            elif "flux_wr" in event_name:
+                total_write_beats += value
+
+        # Convert beats to bandwidth (each beat = 32 bytes)
+        bytes_per_beat = 32
+        read_bytes = total_read_beats * bytes_per_beat
+        write_bytes = total_write_beats * bytes_per_beat
+
+        read_gbps = read_bytes / (duration_sec * 1e9)
+        write_gbps = write_bytes / (duration_sec * 1e9)
+        total_gbps = read_gbps + write_gbps
+
+        # Calculate utilization
+        max_bw = self.model.max_bandwidth_gbps
+        utilization = total_gbps / max_bw if max_bw > 0 else 0.0
+
+        return {
+            "read_gbps": round(read_gbps, 2),
+            "write_gbps": round(write_gbps, 2),
+            "total_gbps": round(total_gbps, 2),
+            "utilization": round(utilization, 4),
+            "read_bytes": read_bytes,
+            "write_bytes": write_bytes,
+            "duration_sec": duration_sec,
+        }
+
+    def _collect_l3_uncore(
+        self,
+        duration_sec: int,
+        sccl_ids: Optional[List[int]] = None,
+    ) -> Dict[str, float]:
+        """Collect L3 cache statistics from uncore PMU.
+
+        Kunpeng L3 uncore events:
+        - rd_hit_cpipe: L3 read hits
+        - rd_miss_cpipe: L3 read misses
+        - wr_hit_cpipe: L3 write hits
+        - wr_miss_cpipe: L3 write misses
+        """
+        if sccl_ids is None:
+            sccl_ids = [1, 3, 5, 7]
+
+        group = UNCORE_EVENT_GROUPS["l3_cache_uncore"]
+        events = resolve_uncore_events(group, sccl_ids, unit_ids=[0, 1, 2, 3])
+
+        event_str = ",".join(events)
+        cmd = [
+            "perf", "stat", "-x", ",", "-e", event_str,
+            "-a", "--", "sleep", str(duration_sec),
+        ]
+
+        result = run_cmd(cmd, timeout_sec=duration_sec + 60)
+        if not result.ok:
+            self.log.warning("Uncore L3 collection failed: %s", result.stderr[:200])
+            return {}
+
+        # Parse results
+        rd_hit = 0
+        rd_miss = 0
+        wr_hit = 0
+        wr_miss = 0
+
+        for line in result.stderr.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+
+            try:
+                value = float(parts[0].replace(",", ""))
+            except ValueError:
+                continue
+
+            event_name = parts[2].strip() if len(parts) > 2 else ""
+            if "rd_hit_cpipe" in event_name:
+                rd_hit += value
+            elif "rd_miss_cpipe" in event_name:
+                rd_miss += value
+            elif "wr_hit_cpipe" in event_name:
+                wr_hit += value
+            elif "wr_miss_cpipe" in event_name:
+                wr_miss += value
+
+        total_access = rd_hit + rd_miss + wr_hit + wr_miss
+        total_hits = rd_hit + wr_hit
+        total_misses = rd_miss + wr_miss
+
+        hit_rate = total_hits / total_access if total_access > 0 else 0.0
+        miss_rate = total_misses / total_access if total_access > 0 else 0.0
+
+        return {
+            "rd_hit": rd_hit,
+            "rd_miss": rd_miss,
+            "wr_hit": wr_hit,
+            "wr_miss": wr_miss,
+            "hit_rate": round(hit_rate, 4),
+            "miss_rate": round(miss_rate, 4),
+            "total_access": total_access,
+        }

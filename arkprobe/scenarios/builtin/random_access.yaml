@@ -1,0 +1,58 @@
+# Random Access Pattern (builtin)
+# Pointer-chasing through randomized linked list to measure memory latency.
+
+scenario:
+  name: "Random Access Pattern (builtin)"
+  type: memory_bound
+  builtin: true
+  description: |
+    Random memory access workload using pointer-chasing through a randomized
+    linked list. Forces cache misses and measures memory latency under
+    unpredictable access patterns. Useful for characterizing cache miss
+    penalties, memory latency, and NUMA remote access costs.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_random} --threads {thread_count} --duration {duration} --buffer-mb 256"
+  teardown: []
+  target_process: "arkprobe_random"
+  throughput_metric: "Mops/s"
+  throughput_regex: 'Access rate:\s+(\d+\.?\d*)\s+Mops/s'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - memory_access
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. Random access should have very
+      high L3 MPKI (>20) since each access is likely to miss L3 cache.
+  - name: "backend_bound_pct"
+    description: >
+      Backend stall ratio. Random access is latency-bound, so backend_bound
+      should be extremely high (>80%) due to waiting for memory.
+  - name: "tlb_mpki"
+    description: >
+      TLB misses per thousand instructions. Random access with large buffer
+      (256MB) will stress TLB, especially if using 4KB pages.

@@ -1,0 +1,58 @@
+# STREAM Benchmark (builtin)
+# Standard memory bandwidth benchmark using COPY, SCALE, ADD, TRIAD operations.
+
+scenario:
+  name: "STREAM Benchmark (builtin)"
+  type: memory_bound
+  builtin: true
+  description: |
+    Standard STREAM benchmark for measuring sustainable memory bandwidth.
+    Implements four operations: COPY, SCALE, ADD, and TRIAD. Each operation
+    moves 2-3 arrays of 8-byte doubles, measuring the memory subsystem's
+    ability to sustain bandwidth under different access patterns.
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 1
+  recommended_cores: 8
+
+workload:
+  setup: []
+  command: "{builtin_binary_stream} --threads {thread_count} --duration {duration}"
+  teardown: []
+  target_process: "arkprobe_stream"
+  throughput_metric: "MB/s"
+  throughput_regex: 'TRIAD:\s+(\d+\.?\d*)\s+MB/s'
+
+collection:
+  perf_duration_sec: 60
+  ebpf_duration_sec: 0
+  warmup_sec: 5
+  event_groups:
+    - topdown_l1
+    - instruction_mix
+    - cache_l1
+    - cache_l2_l3
+    - memory_access
+  ebpf_probes: []
+
+scalability:
+  enabled: true
+  core_counts: [1, 2, 4, 8, 16]
+  thread_counts: [1, 2, 4, 8, 16]
+
+focus_metrics:
+  - name: "l3_mpki"
+    description: >
+      L3 misses per thousand instructions. STREAM should have low L3 MPKI
+      due to sequential access patterns that hardware prefetchers can optimize.
+  - name: "backend_bound_pct"
+    description: >
+      Backend stall ratio. STREAM is memory-bandwidth-bound, so backend_bound
+      should be the dominant TopDown component (>60%).
+  - name: "memory_bandwidth_utilization_pct"
+    description: >
+      Fraction of theoretical peak memory bandwidth. STREAM TRIAD should
+      achieve 60-80% of peak bandwidth on well-tuned systems.

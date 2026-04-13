@@ -251,11 +251,18 @@ class FeatureExtractor:
         itlb = ma.get("itlb_walk", 0)
         tlb_mpki_val = mpki(dtlb + itlb, inst)
 
-        # Memory bandwidth - placeholder (will be enriched from uncore or eBPF)
+        # Memory bandwidth from uncore PMU (if available)
+        uncore = perf.get("uncore", {})
+        ddr_bw = uncore.get("ddr_bandwidth", {})
+
+        read_gbps = ddr_bw.get("read_gbps", 0.0) if ddr_bw else 0.0
+        write_gbps = ddr_bw.get("write_gbps", 0.0) if ddr_bw else 0.0
+        utilization = ddr_bw.get("utilization", 0.0) if ddr_bw else 0.0
+
         return MemorySubsystem(
-            bandwidth_read_gbps=0.0,
-            bandwidth_write_gbps=0.0,
-            bandwidth_utilization=0.0,
+            bandwidth_read_gbps=round(read_gbps, 2),
+            bandwidth_write_gbps=round(write_gbps, 2),
+            bandwidth_utilization=round(utilization, 4),
             tlb_mpki=round(tlb_mpki_val, 2),
         )
 

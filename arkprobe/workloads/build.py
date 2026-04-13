@@ -22,6 +22,8 @@ WORKLOAD_SOURCES = {
     "compute": "compute.c",
     "memory": "memory.c",
     "mixed": "mixed.c",
+    "stream": "stream.c",
+    "random": "random.c",
 }
 
 BINARY_PREFIX = "arkprobe_"

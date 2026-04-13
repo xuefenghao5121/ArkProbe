@@ -160,6 +160,19 @@ class CollectorOrchestrator:
                 log.error("eBPF collection failed: %s", e)
                 result.errors.append(f"ebpf: {e}")
 
+        # Phase 4: Uncore PMU (DDR bandwidth, L3 cache)
+        log.info("[%s] Phase 4: Uncore PMU collection (%ds)",
+                 self.config.scenario_name, self.config.perf_duration_sec)
+        try:
+            uncore_data = self.perf.collect_uncore(
+                duration_sec=self.config.perf_duration_sec,
+            )
+            if uncore_data:
+                result.perf_data["uncore"] = uncore_data
+        except Exception as e:
+            log.warning("Uncore collection failed (non-critical): %s", e)
+            # Don't add to errors - uncore is optional
+
         result.collection_duration_sec = time.time() - start_time
         log.info("[%s] Collection complete in %.1fs with %d errors",
                  self.config.scenario_name, result.collection_duration_sec,
