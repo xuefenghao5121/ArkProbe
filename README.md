@@ -72,6 +72,10 @@ arkprobe collect -s database_oltp --skip-ebpf
 | Database OLTP | database_oltp | 锁竞争/B+tree/WAL 微内核 | 锁等待, L3 MPKI, branch MPKI |
 | Key-Value Store | database_kv | 哈希表/LRU/GET/SET 微内核 | L1D MPKI, TLB MPKI |
 | Web Server | microservice | HTTP解析/路由/响应 微内核 | branch MPKI, IPC |
+| Cryptographic Ops | compute_bound | AES加密/SHA-256哈希 微内核 | IPC, retiring, SIMD |
+| Compression | mixed | LZ77/哈希链/匹配编码 微内核 | branch MPKI, L3 MPKI |
+| Video Encoding | compute_bound | DCT/运动估计/量化 微内核 | FP ratio, SIMD, IPC |
+| ML Inference | compute_bound | GEMM/卷积/激活函数 微内核 | IPC, FP ratio, retiring |
 
 ### 外部场景（需依赖工具）
 
@@ -198,6 +202,21 @@ ruff check arkprobe/ tests/
 | 鲲鹏 930 | TaiShan V200 | 8-wide | 6 + 1 fixed | NEON + SVE |
 
 ## 更新日志
+
+### v0.2.7 (2026-04-13)
+
+**New Feature: 4 个新内置负载**
+- 新增加密微内核（`crypto.c`）：AES 加密、SHA-256 哈希、S-Box 查找
+- 新增压缩微内核（`compress.c`）：LZ77 风格、哈希链匹配、滑动窗口
+- 新增视频编码微内核（`videoenc.c`）：DCT 变换、运动估计、帧内预测
+- 新增 ML 推理微内核（`ml_inference.c`）：GEMM、卷积、激活函数、池化
+- 内置场景从 8 个扩展到 12 个
+
+**报告展示优化**
+- 改进瓶颈分析器分类准确性（Memory-Bound vs Core-Bound）
+- 执行摘要新增 L3 MPKI、内存带宽列和 Quick Insights
+- 图表新增严重程度颜色编码和阈值参考线
+- 场景深度分析新增瓶颈严重程度可视化
 
 ### v0.2.6 (2026-04-13)
 
