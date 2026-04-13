@@ -40,19 +40,24 @@ class BottleneckReport:
 class BottleneckAnalyzer:
     """Identify micro-architectural bottlenecks using TopDown methodology."""
 
-    # Thresholds for bottleneck classification
-    FRONTEND_THRESHOLD = 0.20
-    BACKEND_THRESHOLD = 0.30
-    BAD_SPEC_THRESHOLD = 0.15
-    RETIRING_GOOD_THRESHOLD = 0.50
+    # Thresholds for bottleneck classification (based on ARM TopDown best practices)
+    # A component is considered a bottleneck if it exceeds these thresholds
+    FRONTEND_THRESHOLD = 0.15  # Frontend stalls > 15% is significant
+    BACKEND_THRESHOLD = 0.25   # Backend stalls > 25% is significant
+    BAD_SPEC_THRESHOLD = 0.10  # Bad speculation > 10% is significant
+    RETIRING_GOOD_THRESHOLD = 0.50  # Retiring > 50% means well-balanced
 
-    # Sub-thresholds for indicators
-    HIGH_L3_MPKI = 5.0
-    HIGH_BRANCH_MPKI = 5.0
-    HIGH_L1I_MPKI = 3.0
-    HIGH_TLB_MPKI = 1.0
-    HIGH_BW_UTIL = 0.5
-    HIGH_INDIRECT_RATIO = 0.3
+    # Sub-thresholds for detailed indicators
+    HIGH_L3_MPKI = 5.0         # L3 misses per 1000 instructions
+    HIGH_L2_MPKI = 10.0        # L2 misses per 1000 instructions
+    HIGH_L1D_MPKI = 30.0       # L1D misses per 1000 instructions
+    HIGH_BRANCH_MPKI = 5.0     # Branch mispredictions per 1000 instructions
+    HIGH_L1I_MPKI = 3.0        # L1I misses per 1000 instructions
+    HIGH_TLB_MPKI = 1.0        # TLB misses per 1000 instructions
+    HIGH_BW_UTIL = 0.60        # Memory bandwidth utilization > 60% is high
+    CRITICAL_BW_UTIL = 0.85    # Memory bandwidth > 85% is critical saturation
+    HIGH_INDIRECT_RATIO = 0.3  # Indirect branch ratio > 30%
+    LOW_IPC_THRESHOLD = 1.0    # IPC < 1.0 indicates severe stall
 
     def __init__(self, dispatch_width: int = 4):
         self.dispatch_width = dispatch_width
@@ -92,25 +97,38 @@ class BottleneckAnalyzer:
     def _classify_primary(
         self, fe: float, be: float, ret: float, bad: float
     ) -> BottleneckCategory:
-        """Determine the primary bottleneck category."""
+        """Determine the primary bottleneck category using TopDown hierarchy.
+
+        Priority order: Backend > Frontend > Bad Speculation > Well Balanced
+        Backend is further split into Memory-Bound vs Core-Bound.
+        """
+        # If retiring is high, workload is well-balanced (no significant bottleneck)
         if ret >= self.RETIRING_GOOD_THRESHOLD:
             return BottleneckCategory.WELL_BALANCED
 
-        # Find the dominant non-retiring component
-        components = {
-            BottleneckCategory.FRONTEND_BOUND: fe,
-            BottleneckCategory.BAD_SPECULATION: bad,
-        }
-        # Backend is split into memory and core
-        if be > fe and be > bad:
-            # Use proxy: if L3 MPKI is high or bandwidth is high, it's memory-bound
+        # Backend is the most common bottleneck - check first
+        if be >= self.BACKEND_THRESHOLD:
+            # Distinguish Memory-Bound vs Core-Bound
+            # Memory-bound: high L3 MPKI, high bandwidth utilization, or high L2 MPKI
+            # Core-bound: high IPC utilization but still backend-bound (execution unit saturation)
+            # This distinction requires feature vector context, so we default to MEMORY
+            # and refine in _analyze_backend()
             return BottleneckCategory.BACKEND_MEMORY_BOUND
 
-        dominant = max(components, key=components.get)
-        if components[dominant] < 0.15:
-            return BottleneckCategory.WELL_BALANCED
+        # Frontend bottleneck: instruction fetch/decode stalls
+        if fe >= self.FRONTEND_THRESHOLD:
+            return BottleneckCategory.FRONTEND_BOUND
 
-        return dominant
+        # Bad speculation: branch mispredictions wasting pipeline slots
+        if bad >= self.BAD_SPEC_THRESHOLD:
+            return BottleneckCategory.BAD_SPECULATION
+
+        # No dominant bottleneck, but retiring is low - classify as backend memory
+        # (most common case for memory-intensive workloads)
+        if be > fe and be > bad:
+            return BottleneckCategory.BACKEND_MEMORY_BOUND
+
+        return BottleneckCategory.WELL_BALANCED
 
     def _primary_score(self, td, category: BottleneckCategory) -> float:
         mapping = {
@@ -176,82 +194,146 @@ class BottleneckAnalyzer:
         return details
 
     def _analyze_backend(self, fv: WorkloadFeatureVector) -> List[BottleneckDetail]:
-        """Analyze backend bottleneck: split into memory-bound and core-bound."""
+        """Analyze backend bottleneck: split into memory-bound and core-bound.
+
+        Memory-Bound indicators:
+        - High L3 MPKI (working set exceeds LLC)
+        - High L2 MPKI (working set exceeds L1D)
+        - High memory bandwidth utilization
+        - Low NUMA local ratio
+
+        Core-Bound indicators:
+        - High IPC utilization but still backend-bound
+        - High FP/SIMD ratio (execution unit saturation)
+        - No significant memory pressure
+        """
         details = []
         be = fv.compute.topdown_l1.backend_bound
 
         if be < self.BACKEND_THRESHOLD * 0.5:
             return details
 
-        # Memory-bound indicators
-        mem_indicators = []
-        mem_recs = []
+        # Calculate memory pressure score (0-1)
+        memory_pressure_score = 0.0
+        memory_indicators = []
+        memory_recs = []
 
+        # L3 cache pressure (most important for memory-bound classification)
         if fv.cache.l3_mpki > self.HIGH_L3_MPKI:
-            mem_indicators.append(
-                f"L3 MPKI = {fv.cache.l3_mpki:.1f} — significant last-level cache "
-                f"pressure driving memory accesses"
+            l3_severity = min(1.0, fv.cache.l3_mpki / 20.0)  # 20 MPKI = max severity
+            memory_pressure_score = max(memory_pressure_score, l3_severity)
+            memory_indicators.append(
+                f"L3 MPKI = {fv.cache.l3_mpki:.1f} (threshold: {self.HIGH_L3_MPKI}) — "
+                f"working set exceeds LLC capacity, causing {fv.cache.l3_miss_rate:.1%} miss rate"
             )
-            mem_recs.append(
-                f"Increasing L3 cache size could reduce backend stalls. "
-                f"Current L3 miss rate = {fv.cache.l3_miss_rate:.1%}"
-            )
+            # Estimate potential L3 size increase benefit
+            if fv.cache.l3_mpki > 15:
+                memory_recs.append(
+                    f"CRITICAL: L3 cache size increase highly recommended. "
+                    f"Current L3 MPKI ({fv.cache.l3_mpki:.1f}) indicates severe cache pressure."
+                )
+            else:
+                memory_recs.append(
+                    f"Increasing L3 cache size or associativity could reduce backend stalls. "
+                    f"Estimated benefit: medium-high"
+                )
 
-        if fv.cache.l2_mpki > 10:
-            mem_indicators.append(
-                f"L2 MPKI = {fv.cache.l2_mpki:.1f} — working set exceeds L1D capacity"
+        # L2 cache pressure
+        if fv.cache.l2_mpki > self.HIGH_L2_MPKI:
+            memory_pressure_score = max(memory_pressure_score, fv.cache.l2_mpki / 30.0)
+            memory_indicators.append(
+                f"L2 MPKI = {fv.cache.l2_mpki:.1f} — significant L2 misses, "
+                f"working set exceeds L1D capacity"
             )
-            mem_recs.append("Consider larger L2 cache or improved L2 prefetching")
+            memory_recs.append("Consider larger L2 cache or improved L2 prefetcher")
 
+        # L1D cache pressure
+        if fv.cache.l1d_mpki > self.HIGH_L1D_MPKI:
+            memory_indicators.append(
+                f"L1D MPKI = {fv.cache.l1d_mpki:.1f} — high L1D miss rate"
+            )
+            memory_recs.append("L1D size increase or better prefetching may help")
+
+        # Memory bandwidth saturation
         if fv.memory.bandwidth_utilization > self.HIGH_BW_UTIL:
-            mem_indicators.append(
-                f"Memory bandwidth utilization = {fv.memory.bandwidth_utilization:.0%} "
-                f"— approaching memory controller saturation"
-            )
-            mem_recs.append(
-                "More memory channels or higher-frequency DIMMs needed"
-            )
+            bw_severity = (fv.memory.bandwidth_utilization - self.HIGH_BW_UTIL) / (1.0 - self.HIGH_BW_UTIL)
+            memory_pressure_score = max(memory_pressure_score, bw_severity)
 
+            if fv.memory.bandwidth_utilization > self.CRITICAL_BW_UTIL:
+                memory_indicators.append(
+                    f"CRITICAL: Memory bandwidth utilization = {fv.memory.bandwidth_utilization:.0%} "
+                    f"— approaching saturation, memory controller is bottleneck"
+                )
+                memory_recs.append(
+                    "URGENT: More memory channels, higher-frequency DIMMs, or HBM required"
+                )
+            else:
+                memory_indicators.append(
+                    f"Memory bandwidth utilization = {fv.memory.bandwidth_utilization:.0%} "
+                    f"— significant pressure on memory subsystem"
+                )
+                memory_recs.append(
+                    "Additional memory channels or faster DIMMs recommended"
+                )
+
+        # NUMA remote access penalty
         if fv.memory.numa_local_ratio is not None and fv.memory.numa_local_ratio < 0.8:
-            mem_indicators.append(
+            numa_penalty = (1.0 - fv.memory.numa_local_ratio) * 2  # Scale to 0-1
+            memory_pressure_score = max(memory_pressure_score, numa_penalty)
+            memory_indicators.append(
                 f"NUMA local access ratio = {fv.memory.numa_local_ratio:.0%} "
-                f"— significant remote memory traffic"
+                f"— {100 - fv.memory.numa_local_ratio:.0f}% remote memory traffic adding latency"
             )
-            mem_recs.append(
-                "Interconnect bandwidth and NUMA topology improvements"
+            memory_recs.append(
+                "NUMA-aware memory allocation or interconnect bandwidth improvements"
             )
 
-        if mem_indicators:
+        # Add Memory-Bound detail if indicators exist
+        if memory_indicators:
             details.append(BottleneckDetail(
                 category="Backend: Memory Bound",
-                score=be,
-                indicators=mem_indicators,
-                recommendations=mem_recs,
+                score=be * max(0.5, memory_pressure_score),  # Weight by memory pressure
+                indicators=memory_indicators,
+                recommendations=memory_recs,
             ))
 
-        # Core-bound indicators
+        # Core-Bound analysis (execution unit saturation)
         core_indicators = []
         core_recs = []
 
-        ipc_ratio = fv.compute.ipc / max(1, self.dispatch_width)  # dispatch width from hardware config
-        if ipc_ratio > 0.7 and not mem_indicators:
-            core_indicators.append(
-                f"IPC = {fv.compute.ipc:.2f} approaching dispatch width — "
-                f"execution unit saturation"
-            )
-            core_recs.append("Wider dispatch or more execution units")
+        ipc_ratio = fv.compute.ipc / max(1, self.dispatch_width)
 
+        # Core-bound: high IPC utilization but still backend-bound with low memory pressure
+        if ipc_ratio > 0.6 and memory_pressure_score < 0.3:
+            core_indicators.append(
+                f"IPC = {fv.compute.ipc:.2f} ({ipc_ratio:.0%} of dispatch width) — "
+                f"execution units are saturated"
+            )
+            core_recs.append("Wider dispatch width or more execution units")
+
+        # FP/SIMD saturation
         if fv.compute.instruction_mix.fp_ratio > 0.2:
             core_indicators.append(
                 f"FP instruction ratio = {fv.compute.instruction_mix.fp_ratio:.0%} "
-                f"— FP execution unit may be bottleneck"
+                f"— FP/SIMD execution units may be bottleneck"
             )
-            core_recs.append("Additional FP/SIMD execution units")
+            if fv.compute.instruction_mix.vector_ratio > 0.1:
+                core_recs.append("Additional SIMD/NEON execution units or wider vector width")
+            else:
+                core_recs.append("Additional FP execution units")
+
+        # High load/store ratio (address generation bottleneck)
+        if fv.compute.instruction_mix.load_ratio + fv.compute.instruction_mix.store_ratio > 0.4:
+            core_indicators.append(
+                f"Load/Store ratio = {fv.compute.instruction_mix.load_ratio + fv.compute.instruction_mix.store_ratio:.0%} "
+                f"— address generation units may be bottleneck"
+            )
+            core_recs.append("Additional load/store units or AGUs")
 
         if core_indicators:
             details.append(BottleneckDetail(
                 category="Backend: Core Bound",
-                score=be * (1 - fv.memory.bandwidth_utilization),
+                score=be * (1 - memory_pressure_score) * ipc_ratio,
                 indicators=core_indicators,
                 recommendations=core_recs,
             ))
@@ -311,34 +393,86 @@ class BottleneckAnalyzer:
         primary: BottleneckCategory,
         details: List[BottleneckDetail],
     ) -> List[str]:
-        """Generate human-readable notes for chip architects."""
+        """Generate human-readable notes for chip architects.
+
+        Output format:
+        1. Primary bottleneck summary with TopDown breakdown
+        2. IPC/CPI analysis with dispatch utilization
+        3. Cache hierarchy summary
+        4. Key design recommendations
+        """
         notes = []
 
+        # 1. Primary bottleneck summary
+        td = fv.compute.topdown_l1
+        bottleneck_name = primary.value.replace('_', ' ').title()
+
+        # Add severity indicator
+        if primary == BottleneckCategory.WELL_BALANCED:
+            severity = "✓ Good"
+        elif td.backend_bound > 0.5 or td.frontend_bound > 0.4:
+            severity = "⚠ CRITICAL"
+        elif td.backend_bound > 0.3 or td.frontend_bound > 0.25:
+            severity = "⚡ Significant"
+        else:
+            severity = "→ Moderate"
+
         notes.append(
-            f"Workload '{fv.scenario_name}' ({fv.scenario_type.value}) is primarily "
-            f"{primary.value.replace('_', ' ')} "
-            f"(TopDown: FE={fv.compute.topdown_l1.frontend_bound:.0%}, "
-            f"BE={fv.compute.topdown_l1.backend_bound:.0%}, "
-            f"RET={fv.compute.topdown_l1.retiring:.0%}, "
-            f"BS={fv.compute.topdown_l1.bad_speculation:.0%})"
+            f"{severity}: '{fv.scenario_name}' ({fv.scenario_type.value}) is "
+            f"{bottleneck_name}"
         )
+
+        # TopDown breakdown with visual bar
+        fe_bar = "█" * int(td.frontend_bound * 10)
+        be_bar = "█" * int(td.backend_bound * 10)
+        ret_bar = "█" * int(td.retiring * 10)
+        bad_bar = "█" * int(td.bad_speculation * 10)
+        notes.append(
+            f"TopDown L1: FE={td.frontend_bound:.0%}{fe_bar} | "
+            f"BE={td.backend_bound:.0%}{be_bar} | "
+            f"RET={td.retiring:.0%}{ret_bar} | "
+            f"BAD={td.bad_speculation:.0%}{bad_bar}"
+        )
+
+        # 2. IPC/CPI analysis
+        ipc_util = fv.compute.ipc / self.dispatch_width
+        if ipc_util > 0.7:
+            ipc_status = "High utilization"
+        elif ipc_util > 0.4:
+            ipc_status = "Moderate utilization"
+        else:
+            ipc_status = "Low utilization (stalled)"
 
         notes.append(
             f"IPC = {fv.compute.ipc:.2f}, CPI = {fv.compute.cpi:.2f} "
-            f"(dispatch width = {self.dispatch_width}, utilization = {fv.compute.ipc/self.dispatch_width:.0%})"
+            f"({ipc_status}: {ipc_util:.0%} of dispatch width {self.dispatch_width})"
         )
 
-        # Cache hierarchy summary
-        notes.append(
-            f"Cache MPKI waterfall: L1I={fv.cache.l1i_mpki:.1f}, "
-            f"L1D={fv.cache.l1d_mpki:.1f}, L2={fv.cache.l2_mpki:.1f}, "
-            f"L3={fv.cache.l3_mpki:.1f}"
-        )
+        # 3. Cache hierarchy summary with severity indicators
+        cache_summary = []
+        if fv.cache.l3_mpki > self.HIGH_L3_MPKI:
+            cache_summary.append(f"L3={fv.cache.l3_mpki:.1f}⚠")
+        else:
+            cache_summary.append(f"L3={fv.cache.l3_mpki:.1f}")
 
-        # Key design takeaway
+        if fv.cache.l2_mpki > self.HIGH_L2_MPKI:
+            cache_summary.append(f"L2={fv.cache.l2_mpki:.1f}⚠")
+        else:
+            cache_summary.append(f"L2={fv.cache.l2_mpki:.1f}")
+
+        cache_summary.append(f"L1D={fv.cache.l1d_mpki:.1f}")
+        cache_summary.append(f"L1I={fv.cache.l1i_mpki:.1f}")
+
+        notes.append(f"Cache MPKI waterfall: {' → '.join(cache_summary)}")
+
+        # 4. Top recommendation from each detail
         for detail in details:
             if detail.recommendations:
-                notes.append(f"[{detail.category}] {detail.recommendations[0]}")
+                # Take first recommendation, truncate if too long
+                rec = detail.recommendations[0]
+                if len(rec) > 100:
+                    rec = rec[:97] + "..."
+                notes.append(f"[{detail.category}] {rec}")
 
         return notes
 

@@ -30,28 +30,66 @@ TOPDOWN_COLORS = {
     "Bad Speculation": "#f9ca24",
 }
 
+# Severity colors for bottleneck indication
+SEVERITY_COLORS = {
+    "critical": "#d62728",    # Red
+    "significant": "#ff7f0e", # Orange
+    "moderate": "#f9ca24",    # Yellow
+    "good": "#2ca02c",        # Green
+}
+
+# Threshold lines for reference
+THRESHOLD_LINES = {
+    "l3_mpki_high": {"value": 5.0, "label": "High L3 MPKI (5)"},
+    "l3_mpki_critical": {"value": 15.0, "label": "Critical L3 MPKI (15)"},
+    "ipc_good": {"value": 2.0, "label": "Good IPC (2.0)"},
+    "ipc_low": {"value": 1.0, "label": "Low IPC (1.0)"},
+}
+
 
 class ChartFactory:
     """Generate Plotly charts for the HTML report."""
 
     @staticmethod
     def topdown_stacked_bar(fv: WorkloadFeatureVector) -> go.Figure:
-        """TopDown L1 breakdown as a stacked horizontal bar."""
+        """TopDown L1 breakdown as a stacked horizontal bar with bottleneck highlight.
+
+        The dominant component is highlighted with a border and annotation.
+        """
         td = fv.compute.topdown_l1
         categories = ["Frontend Bound", "Backend Bound", "Retiring", "Bad Speculation"]
         values = [td.frontend_bound, td.backend_bound, td.retiring, td.bad_speculation]
 
+        # Find dominant component (excluding Retiring)
+        non_retiring = [(c, v) for c, v in zip(categories, values) if c != "Retiring"]
+        dominant = max(non_retiring, key=lambda x: x[1])
+
         fig = go.Figure()
         for cat, val in zip(categories, values):
+            # Highlight dominant bottleneck
+            is_dominant = (cat == dominant[0] and val > 0.15)
+
             fig.add_trace(go.Bar(
                 y=[fv.scenario_name],
                 x=[val * 100],
                 name=cat,
                 orientation="h",
                 marker_color=TOPDOWN_COLORS[cat],
+                marker_line_width=3 if is_dominant else 0,
+                marker_line_color="#d62728" if is_dominant else None,
                 text=f"{val:.0%}",
                 textposition="inside",
             ))
+
+        # Add annotation for dominant bottleneck
+        if dominant[1] > 0.15:
+            fig.add_annotation(
+                x=50, y=0,
+                text=f"⚠ Primary: {dominant[0]} ({dominant[1]:.0%})",
+                showarrow=False,
+                font=dict(size=12, color="#d62728"),
+                xanchor="center",
+            )
 
         fig.update_layout(
             barmode="stack",
@@ -91,10 +129,53 @@ class ChartFactory:
 
     @staticmethod
     def cache_mpki_waterfall(fv: WorkloadFeatureVector) -> go.Figure:
-        """L1I -> L1D -> L2 -> L3 MPKI as a bar chart."""
+        """L1I -> L1D -> L2 -> L3 MPKI as a bar chart with severity coloring.
+
+        Colors indicate severity:
+        - Green: Good (L3 < 5, L2 < 10)
+        - Yellow: Moderate (L3 5-15, L2 10-20)
+        - Orange: High (L3 15-25, L2 20-30)
+        - Red: Critical (L3 > 25, L2 > 30)
+        """
         levels = ["L1I", "L1D", "L2", "L3"]
         values = [fv.cache.l1i_mpki, fv.cache.l1d_mpki, fv.cache.l2_mpki, fv.cache.l3_mpki]
-        colors = ["#ff6b6b", "#4ecdc4", "#45b7d1", "#f9ca24"]
+
+        # Color based on severity
+        def get_severity_color(level: str, value: float) -> str:
+            if level == "L3":
+                if value < 5:
+                    return "#2ca02c"  # Green
+                elif value < 15:
+                    return "#f9ca24"  # Yellow
+                elif value < 25:
+                    return "#ff7f0e"  # Orange
+                else:
+                    return "#d62728"  # Red
+            elif level == "L2":
+                if value < 10:
+                    return "#2ca02c"
+                elif value < 20:
+                    return "#f9ca24"
+                elif value < 30:
+                    return "#ff7f0e"
+                else:
+                    return "#d62728"
+            elif level == "L1D":
+                if value < 20:
+                    return "#2ca02c"
+                elif value < 40:
+                    return "#f9ca24"
+                else:
+                    return "#ff7f0e"
+            else:  # L1I
+                if value < 3:
+                    return "#2ca02c"
+                elif value < 5:
+                    return "#f9ca24"
+                else:
+                    return "#ff7f0e"
+
+        colors = [get_severity_color(l, v) for l, v in zip(levels, values)]
 
         fig = go.Figure(go.Bar(
             x=levels, y=values,
@@ -102,6 +183,16 @@ class ChartFactory:
             text=[f"{v:.1f}" for v in values],
             textposition="outside",
         ))
+
+        # Add threshold reference lines
+        fig.add_hline(
+            y=5.0, line_dash="dash", line_color="#f9ca24", opacity=0.7,
+            annotation_text="L3 threshold (5)", annotation_position="right"
+        )
+        fig.add_hline(
+            y=15.0, line_dash="dash", line_color="#d62728", opacity=0.7,
+            annotation_text="L3 critical (15)", annotation_position="right"
+        )
 
         fig.update_layout(
             title=f"Cache MPKI — {fv.scenario_name}",
