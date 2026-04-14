@@ -525,6 +525,234 @@ def optimize(ctx, feature_vectors):
                 console.print(f"  {conflict['parameter']}: {scenarios}")
 
 
+@cli.command()
+@click.option("--scenario", "-s", required=True,
+              help="Scenario name to run")
+@click.option("--config", "-c", multiple=True,
+              help="Tuning config name (can specify multiple)")
+@click.option("--duration", "-t", type=int, default=60,
+              help="Collection duration per config (seconds)")
+@click.option("--baseline", type=str, default="default",
+              help="Baseline configuration name")
+@click.option("--dry-run", is_flag=True,
+              help="Preview changes without applying")
+@click.option("--output", "-o", type=click.Path(), default="./tuning_results",
+              help="Output directory for results")
+@click.pass_context
+def tune(ctx, scenario, config, duration, baseline, dry_run, output):
+    """Run workload under different hardware tuning configurations.
+
+    Examples:
+        # Compare performance and power configs
+        arkprobe tune -s compute -c performance -c power
+
+        # Use database-optimized config
+        arkprobe tune -s database_oltp -c database
+
+        # Dry run to preview changes
+        arkprobe tune -s memory -c latency --dry-run
+    """
+    from .collectors.collector_orchestrator import CollectorOrchestrator, ScenarioCollectionConfig
+    from .analysis.feature_extractor import FeatureExtractor
+    from .model.feature_vector import save_feature_vector
+    from .scenarios.loader import get_scenario_by_name
+    from .workloads.build import resolve_builtin_command
+    from .tuner.hardware_tuner import HardwareTuner, TUNING_PRESETS, TuningConfig
+    from .tuner.comparator import TuningComparator
+
+    data_dir = ctx.obj["data_dir"]
+    output_dir = Path(output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load scenario
+    sc = get_scenario_by_name(scenario)
+    if not sc:
+        console.print(f"[red]Scenario not found: {scenario}[/red]")
+        console.print("Use 'arkprobe list' to see available scenarios.")
+        return
+
+    # Resolve configs
+    configs_to_run = list(config) if config else ["performance", "power"]
+    if baseline not in configs_to_run:
+        configs_to_run.insert(0, baseline)
+
+    # Validate config names
+    for cfg_name in configs_to_run:
+        if cfg_name not in TUNING_PRESETS:
+            console.print(f"[red]Unknown config: {cfg_name}[/red]")
+            console.print(f"Available: {', '.join(TUNING_PRESETS.keys())}")
+            return
+
+    console.print(f"\n[bold]Tuning Experiment: {sc.name}[/bold]")
+    console.print(f"Configs: {', '.join(configs_to_run)}")
+    console.print(f"Duration: {duration}s per config\n")
+
+    tuner = HardwareTuner(dry_run=dry_run)
+    extractor = FeatureExtractor()
+    results = []
+
+    for cfg_name in configs_to_run:
+        config = TUNING_PRESETS[cfg_name]
+        console.print(f"[cyan]>>> Config: {cfg_name}[/cyan]")
+        console.print(f"    {config.description}")
+
+        # Apply tuning
+        result = tuner.apply(config)
+        if not result.success:
+            console.print(f"    [red]Failed to apply config: {result.errors}[/red]")
+            continue
+
+        if result.errors:
+            for err in result.errors:
+                console.print(f"    [yellow]Warning: {err}[/yellow]")
+
+        # Run workload
+        workload_cmd = sc.workload.command
+        if sc.builtin:
+            workload_cmd = resolve_builtin_command(workload_cmd)
+
+        # Wrap with numactl/taskset if configured
+        wrapped_cmd = tuner.wrap_command(config, workload_cmd.split())
+
+        collection_config = ScenarioCollectionConfig(
+            scenario_name=f"{sc.name.lower().replace(' ', '_')}_{cfg_name}",
+            workload_command=" ".join(wrapped_cmd),
+            kunpeng_model="920",
+            perf_duration_sec=duration,
+            ebpf_duration_sec=0,
+            warmup_sec=sc.collection.warmup_sec,
+            skip_ebpf=True,
+            skip_scalability=True,
+        )
+
+        orchestrator = CollectorOrchestrator(collection_config, data_dir)
+        collection_result = orchestrator.run()
+
+        if collection_result.errors:
+            console.print(f"    [yellow]Collection warnings: {len(collection_result.errors)}[/yellow]")
+
+        # Extract features
+        fv = extractor.extract(collection_result, sc)
+        fv_path = output_dir / f"{sc.name.lower().replace(' ', '_')}_{cfg_name}_features.json"
+        save_feature_vector(fv, fv_path)
+
+        console.print(f"    IPC={fv.compute.ipc:.2f}, L3 MPKI={fv.cache.l3_mpki:.1f}")
+        console.print(f"    [green]Saved: {fv_path}[/green]\n")
+
+        results.append((cfg_name, fv))
+
+        # Restore original state
+        tuner.restore()
+
+    # Compare results
+    if len(results) >= 2:
+        console.print("\n[bold]Comparison Results[/bold]\n")
+
+        comparator = TuningComparator()
+        baseline_name, baseline_fv = results[0]
+
+        # Comparison table
+        table = Table(title=f"Configuration Impact (baseline: {baseline_name})")
+        table.add_column("Config", style="cyan")
+        table.add_column("IPC")
+        table.add_column("IPC Δ%")
+        table.add_column("L3 MPKI")
+        table.add_column("L3 Δ%")
+        table.add_column("Branch MPKI")
+        table.add_column("Overall")
+
+        for cfg_name, fv in results:
+            ipc = fv.compute.ipc
+            l3_mpki = fv.cache.l3_mpki
+            branch_mpki = fv.branch.branch_mpki
+
+            if cfg_name == baseline_name:
+                ipc_delta = "-"
+                l3_delta = "-"
+                overall = "-"
+            else:
+                report = comparator.compare(baseline_fv, fv, cfg_name)
+                ipc_change = next((c for c in report.metric_changes if c.name == "ipc"), None)
+                l3_change = next((c for c in report.metric_changes if c.name == "l3_mpki"), None)
+
+                ipc_delta = f"{ipc_change.percent_change:+.1f}%" if ipc_change else "-"
+                l3_delta = f"{l3_change.percent_change:+.1f}%" if l3_change else "-"
+
+                if report.overall_improvement > 0.1:
+                    overall = f"[green]+{report.overall_improvement:.2f}[/green]"
+                elif report.overall_improvement < -0.1:
+                    overall = f"[red]{report.overall_improvement:.2f}[/red]"
+                else:
+                    overall = f"{report.overall_improvement:.2f}"
+
+            table.add_row(
+                cfg_name,
+                f"{ipc:.2f}",
+                ipc_delta,
+                f"{l3_mpki:.1f}",
+                l3_delta,
+                f"{branch_mpki:.1f}",
+                overall,
+            )
+
+        console.print(table)
+
+        # Key findings
+        for cfg_name, fv in results[1:]:
+            report = comparator.compare(baseline_fv, fv, cfg_name)
+            if report.key_findings:
+                console.print(f"\n[bold]{cfg_name}[/bold]:")
+                for finding in report.key_findings:
+                    console.print(f"  • {finding}")
+
+        # Save comparison report
+        comparison_path = output_dir / "tuning_comparison.json"
+        comparison_data = {
+            "scenario": sc.name,
+            "baseline": baseline_name,
+            "configs_tested": [r[0] for r in results],
+            "results": [
+                {
+                    "config": cfg_name,
+                    "ipc": fv.compute.ipc,
+                    "l3_mpki": fv.cache.l3_mpki,
+                    "branch_mpki": fv.branch.branch_mpki,
+                    "backend_bound": fv.compute.topdown_l1.backend_bound,
+                }
+                for cfg_name, fv in results
+            ],
+        }
+        comparison_path.write_text(json.dumps(comparison_data, indent=2))
+        console.print(f"\n[green]Comparison saved to: {comparison_path}[/green]")
+
+
+@cli.command("tune-configs")
+def list_tune_configs():
+    """List available tuning configurations."""
+    from .tuner.hardware_tuner import TUNING_PRESETS
+
+    table = Table(title="Available Tuning Configurations")
+    table.add_column("Name", style="cyan")
+    table.add_column("Governor")
+    table.add_column("SMT")
+    table.add_column("C-state")
+    table.add_column("THP")
+    table.add_column("Description")
+
+    for name, config in TUNING_PRESETS.items():
+        table.add_row(
+            name,
+            config.cpu_governor.value,
+            "on" if config.smt_enabled else "off",
+            f"C{config.cstate_limit.value}" if config.cstate_limit.value >= 0 else "unlimited",
+            config.thp_setting.value,
+            config.description,
+        )
+
+    console.print(table)
+    console.print("\n[dim]Usage: arkprobe tune -s <scenario> -c <config_name>[/dim]")
+
+
 def main():
     cli(obj={})
 

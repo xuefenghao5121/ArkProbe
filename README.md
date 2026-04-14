@@ -203,6 +203,20 @@ ruff check arkprobe/ tests/
 
 ## 更新日志
 
+### v0.2.8 (2026-04-13)
+
+**New Feature: 真实硬件调节能力**
+- 新增 `arkprobe tune` 命令，支持在不同硬件配置下运行负载并对比性能
+- 可调节参数：CPU 频率/governor、SMT 开关、C-state 限制、NUMA 策略、CPU 亲和性、THP 设置
+- 8 个预置配置：default、performance、performance_no_smt、latency、power、database、compute、memory
+- 新增 `arkprobe tune-configs` 命令列出可用配置
+- 自动对比分析：IPC 变化、MPKI 变化、瓶颈迁移、整体改进评分
+
+**新增模块**
+- `arkprobe/tuner/hardware_tuner.py` — 硬件参数调节器
+- `arkprobe/tuner/comparator.py` — 配置对比分析器
+- 25 个新增单元测试
+
 ### v0.2.7 (2026-04-13)
 
 **New Feature: 4 个新内置负载**
