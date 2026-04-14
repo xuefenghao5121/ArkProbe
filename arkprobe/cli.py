@@ -753,6 +753,203 @@ def list_tune_configs():
     console.print("\n[dim]Usage: arkprobe tune -s <scenario> -c <config_name>[/dim]")
 
 
+@cli.command("gem5-configs")
+def list_gem5_configs():
+    """List available gem5 simulation configurations."""
+    from .tuner.gem5_tuner import GEM5_PRESETS
+
+    table = Table(title="Available gem5 Configurations")
+    table.add_column("Name", style="cyan")
+    table.add_column("L1I", justify="right")
+    table.add_column("L1D", justify="right")
+    table.add_column("L2", justify="right")
+    table.add_column("Issue Width", justify="center")
+    table.add_column("ROB", justify="right")
+    table.add_column("Description")
+
+    for name, config in GEM5_PRESETS.items():
+        l1i = f"{config.l1i_cache.size_kb}KB"
+        l1d = f"{config.l1d_cache.size_kb}KB"
+        l2 = f"{config.l2_cache.size_kb}KB" if config.l2_cache else "-"
+        issue = str(config.cpu_config.issue_width)
+        rob = str(config.cpu_config.rob_entries)
+
+        table.add_row(name, l1i, l1d, l2, issue, rob, config.description[:30])
+
+    console.print(table)
+    console.print("\n[dim]Usage: arkprobe simulate -s <scenario> -c <config_name>[/dim]")
+    console.print("[dim]Requires gem5 to be installed and configured.[/dim]")
+
+
+@cli.command()
+@click.option("--scenario", "-s", required=True,
+              help="Scenario name to simulate")
+@click.option("--config", "-c", multiple=True,
+              help="gem5 config name (can specify multiple)")
+@click.option("--gem5-path", type=click.Path(exists=True),
+              help="Path to gem5 installation")
+@click.option("--sim-time", type=float, default=0.1,
+              help="Simulation time in seconds (default: 0.1s)")
+@click.option("--output", "-o", type=click.Path(), default="./gem5_results",
+              help="Output directory for results")
+@click.pass_context
+def simulate(ctx, scenario, config, gem5_path, sim_time, output):
+    """Run gem5 simulation with different microarchitectural configurations.
+
+    This command simulates workloads in gem5 to explore the impact of
+    microarchitectural parameters that cannot be changed on real hardware.
+
+    Examples:
+        # Simulate with default config
+        arkprobe simulate -s compute
+
+        # Compare multiple configurations
+        arkprobe simulate -s memory -c default -c large_cache -c deep_rob
+
+        # Specify gem5 path
+        arkprobe simulate -s compute --gem5-path ~/gem5
+    """
+    from .tuner.gem5_tuner import Gem5Tuner, Gem5Config, GEM5_PRESETS
+    from .workloads.build import get_workload_binary
+    from pathlib import Path
+
+    output_dir = Path(output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check gem5 availability
+    tuner = Gem5Tuner(gem5_path=Path(gem5_path) if gem5_path else None)
+    if tuner.gem5_path is None:
+        console.print("[red]gem5 not found.[/red]")
+        console.print("\nTo install gem5:")
+        console.print("  1. Clone: git clone https://github.com/gem5/gem5.git")
+        console.print("  2. Build: scons build/ARM/gem5.opt -j$(nproc)")
+        console.print("  3. Set path: export GEM5_PATH=/path/to/gem5")
+        console.print("\nOr use --gem5-path to specify location.")
+        return
+
+    # Load scenario
+    from .scenarios.loader import get_scenario_by_name
+    sc = get_scenario_by_name(scenario)
+    if not sc:
+        console.print(f"[red]Scenario not found: {scenario}[/red]")
+        return
+
+    # Get workload binary
+    if not sc.builtin:
+        console.print("[red]Only builtin scenarios are supported for gem5 simulation.[/red]")
+        console.print("Use 'arkprobe list' to see builtin scenarios.")
+        return
+
+    binary_path = get_workload_binary(scenario.split()[0].lower())
+    if binary_path is None or not binary_path.exists():
+        console.print(f"[red]Workload binary not found for: {scenario}[/red]")
+        console.print("Run 'arkprobe collect' first to build the binary.")
+        return
+
+    # Resolve configs
+    configs_to_run = list(config) if config else ["default", "large_cache", "wide_issue"]
+    if "default" not in configs_to_run:
+        configs_to_run.insert(0, "default")
+
+    # Validate config names
+    for cfg_name in configs_to_run:
+        if cfg_name not in GEM5_PRESETS:
+            console.print(f"[red]Unknown gem5 config: {cfg_name}[/red]")
+            console.print(f"Available: {', '.join(GEM5_PRESETS.keys())}")
+            return
+
+    console.print(f"\n[bold]gem5 Simulation: {sc.name}[/bold]")
+    console.print(f"Binary: {binary_path}")
+    console.print(f"Configs: {', '.join(configs_to_run)}")
+    console.print(f"Simulation time: {sim_time}s\n")
+
+    results = []
+
+    for cfg_name in configs_to_run:
+        preset_config = GEM5_PRESETS[cfg_name]
+        # Update simulation time
+        config = Gem5Config(
+            name=preset_config.name,
+            cpu_config=preset_config.cpu_config,
+            l1i_cache=preset_config.l1i_cache,
+            l1d_cache=preset_config.l1d_cache,
+            l2_cache=preset_config.l2_cache,
+            l3_cache=preset_config.l3_cache,
+            cpu_freq=preset_config.cpu_freq,
+            mem_size=preset_config.mem_size,
+            mem_type=preset_config.mem_type,
+            simulation_time=sim_time,
+            description=preset_config.description,
+        )
+
+        console.print(f"[cyan]>>> Simulating: {cfg_name}[/cyan]")
+        console.print(f"    {config.description}")
+
+        stats = tuner.simulate(config, binary_path)
+
+        if stats.instructions == 0:
+            console.print(f"    [red]Simulation failed or no instructions executed[/red]")
+            continue
+
+        console.print(f"    IPC={stats.ipc:.4f}, Instructions={stats.instructions:,}")
+        console.print(f"    L1D MPKI={stats.l1d_mpki:.2f}, Branch MPKI={stats.branch_mpki:.2f}")
+        console.print(f"    Sim time: {stats.sim_seconds:.4f}s\n")
+
+        results.append((cfg_name, stats))
+
+        # Save individual result
+        result_path = output_dir / f"{scenario}_{cfg_name}_stats.json"
+        result_path.write_text(json.dumps(tuner.stats_to_feature_dict(stats), indent=2))
+
+    # Compare results
+    if len(results) >= 2:
+        console.print("\n[bold]Simulation Comparison[/bold]\n")
+
+        table = Table(title="gem5 Configuration Impact")
+        table.add_column("Config", style="cyan")
+        table.add_column("IPC")
+        table.add_column("IPC Δ%")
+        table.add_column("L1D MPKI")
+        table.add_column("Branch MPKI")
+
+        baseline_name, baseline_stats = results[0]
+        baseline_ipc = baseline_stats.ipc
+
+        for cfg_name, stats in results:
+            if cfg_name == baseline_name:
+                ipc_delta = "-"
+            else:
+                delta = ((stats.ipc - baseline_ipc) / baseline_ipc * 100) if baseline_ipc > 0 else 0
+                ipc_delta = f"{delta:+.1f}%"
+
+            table.add_row(
+                cfg_name,
+                f"{stats.ipc:.4f}",
+                ipc_delta,
+                f"{stats.l1d_mpki:.2f}",
+                f"{stats.branch_mpki:.2f}",
+            )
+
+        console.print(table)
+
+        # Save comparison
+        comparison_path = output_dir / "gem5_comparison.json"
+        comparison_data = {
+            "scenario": scenario,
+            "baseline": baseline_name,
+            "simulation_time": sim_time,
+            "results": [
+                {
+                    "config": cfg_name,
+                    **tuner.stats_to_feature_dict(stats),
+                }
+                for cfg_name, stats in results
+            ],
+        }
+        comparison_path.write_text(json.dumps(comparison_data, indent=2))
+        console.print(f"\n[green]Comparison saved to: {comparison_path}[/green]")
+
+
 def main():
     cli(obj={})
 
