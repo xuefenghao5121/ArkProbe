@@ -104,8 +104,13 @@ def list_scenarios_cmd(do_check):
               help="Skip multi-core scalability sweep")
 @click.option("--kunpeng-model", type=click.Choice(["920", "930"]),
               default="920", help="Kunpeng processor model")
+@click.option("--cache-ttl", type=int, default=0,
+              help="Cache TTL in seconds (0=no cache, re-collect always)")
+@click.option("--force", is_flag=True,
+              help="Force re-collection, ignoring cache")
 @click.pass_context
-def collect(ctx, scenario, duration, skip_ebpf, skip_scalability, kunpeng_model):
+def collect(ctx, scenario, duration, skip_ebpf, skip_scalability,
+            kunpeng_model, cache_ttl, force):
     """Collect performance data for specified scenarios."""
     from .collectors.collector_orchestrator import (
         CollectorOrchestrator,
@@ -186,6 +191,8 @@ def collect(ctx, scenario, duration, skip_ebpf, skip_scalability, kunpeng_model)
             ebpf_probes=sc.collection.ebpf_probes,
             skip_ebpf=skip_ebpf,
             skip_scalability=skip_scalability,
+            cache_ttl_sec=cache_ttl,
+            force=force,
         )
 
         orchestrator = CollectorOrchestrator(config, data_dir)

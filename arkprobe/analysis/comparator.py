@@ -150,8 +150,16 @@ class WorkloadComparator:
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
 
+            # Drop zero-variance columns to avoid numerical issues
+            col_std = X_scaled.std(axis=0)
+            nonzero_mask = col_std > 1e-10
+            if nonzero_mask.sum() == 0:
+                log.warning("All features have zero variance, skipping clustering")
+                return {0: [fv.scenario_name for fv in feature_vectors]}
+            X_filtered = X_scaled[:, nonzero_mask]
+
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(X_scaled)
+            labels = kmeans.fit_predict(X_filtered)
 
             clusters: Dict[int, List[str]] = {}
             for i, label in enumerate(labels):
@@ -167,6 +175,9 @@ class WorkloadComparator:
         self, feature_vectors: List[WorkloadFeatureVector]
     ) -> Dict:
         """Reduce feature vectors to 2D via PCA for scatter plot."""
+        if len(feature_vectors) < 2:
+            return {"points": [], "explained_variance": [], "components": []}
+
         X = self._build_feature_matrix(feature_vectors)
 
         try:
@@ -176,8 +187,16 @@ class WorkloadComparator:
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
 
-            pca = PCA(n_components=min(2, X_scaled.shape[1]))
-            X_2d = pca.fit_transform(X_scaled)
+            # Drop zero-variance columns after scaling to avoid PCA divide-by-zero
+            col_std = X_scaled.std(axis=0)
+            nonzero_mask = col_std > 1e-10
+            if nonzero_mask.sum() == 0:
+                log.warning("All features have zero variance, skipping PCA")
+                return {"points": [], "explained_variance": [], "components": []}
+            X_filtered = X_scaled[:, nonzero_mask]
+
+            pca = PCA(n_components=min(2, X_filtered.shape[1]))
+            X_2d = pca.fit_transform(X_filtered)
 
             points = []
             for i, fv in enumerate(feature_vectors):

@@ -3,10 +3,8 @@
 Manages the full collection pipeline:
 1. Pre-collection: system topology, platform info
 2. Warm-up: run workload briefly without collection
-3. Phase 1: perf stat for all event groups (sequential)
-4. Phase 2: eBPF tracing (selected probes)
-5. Phase 3: system metrics collection
-6. Optional Phase 4: multi-core scalability sweep
+3. Phase 2+3+4 (parallel): perf stat + eBPF + Uncore PMU
+4. System metrics collection
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -44,6 +43,8 @@ class ScenarioCollectionConfig:
     scalability_core_counts: List[int] = field(default_factory=lambda: [
         1, 2, 4, 8, 16, 32, 48, 64,
     ])
+    cache_ttl_sec: int = 0
+    force: bool = False
 
 
 @dataclass
@@ -104,10 +105,41 @@ class CollectorOrchestrator:
         self.ebpf = EbpfCollector(output_dir=self.output_dir / "ebpf")
         self.system = SystemCollector(output_dir=self.output_dir / "system")
 
+    def _find_cached_result(self) -> Optional[FullCollectionResult]:
+        """Check for a recent cached result file within TTL."""
+        if self.config.cache_ttl_sec <= 0 or self.config.force:
+            return None
+
+        result_file = self.output_dir / f"{self.config.scenario_name}_raw.json"
+        if not result_file.exists():
+            return None
+
+        try:
+            mtime = result_file.stat().st_mtime
+            age = time.time() - mtime
+            if age <= self.config.cache_ttl_sec:
+                log.info("[%s] Using cached result (age=%.0fs, ttl=%ds)",
+                         self.config.scenario_name, age, self.config.cache_ttl_sec)
+                return FullCollectionResult.load(result_file)
+        except OSError:
+            pass
+
+        return None
+
     def run(self) -> FullCollectionResult:
-        """Execute the complete collection pipeline."""
+        """Execute the complete collection pipeline.
+
+        Phases 2 (perf), 3 (eBPF), and 4 (Uncore) run in parallel
+        since they can observe the same workload concurrently.
+        System info is collected first (fast, provides platform context).
+        """
         start_time = time.time()
         result = FullCollectionResult(scenario_name=self.config.scenario_name)
+
+        # Check cache first
+        cached = self._find_cached_result()
+        if cached is not None:
+            return cached
 
         # Phase 0: System info (always first, fast)
         log.info("[%s] Phase 0: Collecting system info", self.config.scenario_name)
@@ -124,54 +156,72 @@ class CollectorOrchestrator:
         if self.config.warmup_sec > 0 and self.config.workload_command:
             log.info("[%s] Phase 1: Warming up for %ds",
                      self.config.scenario_name, self.config.warmup_sec)
-            # The workload should already be running; we just wait
             time.sleep(self.config.warmup_sec)
 
-        # Phase 2: perf stat collection (sequential per event group)
-        log.info("[%s] Phase 2: perf stat collection (%ds per group)",
-                 self.config.scenario_name, self.config.perf_duration_sec)
-        try:
-            perf_result = self.perf.collect(
-                command=self.config.workload_command,
-                pid=self.config.target_pid,
-                duration_sec=self.config.perf_duration_sec,
-            )
-            result.perf_data = perf_result.data
-            result.raw_files.update(perf_result.raw_files)
-            result.errors.extend(perf_result.errors)
-        except Exception as e:
-            log.error("Perf collection failed: %s", e)
-            result.errors.append(f"perf: {e}")
+        # Phases 2+3+4: perf stat, eBPF, Uncore in parallel
+        def run_perf():
+            log.info("[%s] Phase 2: perf stat collection (%ds per group)",
+                     self.config.scenario_name, self.config.perf_duration_sec)
+            try:
+                return self.perf.collect(
+                    command=self.config.workload_command,
+                    pid=self.config.target_pid,
+                    duration_sec=self.config.perf_duration_sec,
+                )
+            except Exception as e:
+                log.error("Perf collection failed: %s", e)
+                return CollectionResult(collector_name="perf", errors=[f"perf: {e}"])
 
-        # Phase 3: eBPF tracing
-        if not self.config.skip_ebpf:
+        def run_ebpf():
+            if self.config.skip_ebpf:
+                return None
             log.info("[%s] Phase 3: eBPF tracing (%ds)",
                      self.config.scenario_name, self.config.ebpf_duration_sec)
             try:
-                ebpf_result = self.ebpf.collect(
+                return self.ebpf.collect(
                     pid=self.config.target_pid,
                     duration_sec=self.config.ebpf_duration_sec,
                     probes=self.config.ebpf_probes,
                 )
-                result.ebpf_data = ebpf_result.data
-                result.raw_files.update(ebpf_result.raw_files)
-                result.errors.extend(ebpf_result.errors)
             except Exception as e:
                 log.error("eBPF collection failed: %s", e)
-                result.errors.append(f"ebpf: {e}")
+                return CollectionResult(collector_name="ebpf", errors=[f"ebpf: {e}"])
 
-        # Phase 4: Uncore PMU (DDR bandwidth, L3 cache)
-        log.info("[%s] Phase 4: Uncore PMU collection (%ds)",
-                 self.config.scenario_name, self.config.perf_duration_sec)
-        try:
-            uncore_data = self.perf.collect_uncore(
-                duration_sec=self.config.perf_duration_sec,
-            )
-            if uncore_data:
-                result.perf_data["uncore"] = uncore_data
-        except Exception as e:
-            log.warning("Uncore collection failed (non-critical): %s", e)
-            # Don't add to errors - uncore is optional
+        def run_uncore():
+            log.info("[%s] Phase 4: Uncore PMU collection (%ds)",
+                     self.config.scenario_name, self.config.perf_duration_sec)
+            try:
+                return self.perf.collect_uncore(
+                    duration_sec=self.config.perf_duration_sec,
+                )
+            except Exception as e:
+                log.warning("Uncore collection failed (non-critical): %s", e)
+                return None
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {
+                pool.submit(run_perf): "perf",
+                pool.submit(run_ebpf): "ebpf",
+                pool.submit(run_uncore): "uncore",
+            }
+            for future in as_completed(futures):
+                label = futures[future]
+                try:
+                    col_result = future.result()
+                except Exception as e:
+                    result.errors.append(f"{label}: {e}")
+                    continue
+
+                if label == "perf" and col_result is not None:
+                    result.perf_data = col_result.data
+                    result.raw_files.update(col_result.raw_files)
+                    result.errors.extend(col_result.errors)
+                elif label == "ebpf" and col_result is not None:
+                    result.ebpf_data = col_result.data
+                    result.raw_files.update(col_result.raw_files)
+                    result.errors.extend(col_result.errors)
+                elif label == "uncore" and col_result is not None:
+                    result.perf_data["uncore"] = col_result
 
         result.collection_duration_sec = time.time() - start_time
         log.info("[%s] Collection complete in %.1fs with %d errors",
