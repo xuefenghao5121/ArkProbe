@@ -173,9 +173,11 @@ class PerfCollector(BaseCollector):
         elif command:
             cmd.extend(["--", "sh", "-c", command])
         elif duration_sec:
-            cmd.extend(["-a", "--", "sleep", str(duration_sec)])
+            # Without a target, use per-process sleep instead of -a
+            # to avoid perf_event_paranoid=2 rejection on kernel 6.6+
+            cmd.extend(["--", "sleep", str(duration_sec)])
         else:
-            cmd.extend(["-a", "--", "sleep", "10"])
+            cmd.extend(["--", "sleep", "10"])
 
         result = run_cmd(cmd, timeout_sec=max((duration_sec or 60) * repeat + 60, 300))
 
@@ -206,7 +208,7 @@ class PerfCollector(BaseCollector):
         each group gets dedicated use of the 6 programmable PMU counters.
         """
         results = {}
-        for group in get_all_core_event_groups():
+        for group in get_all_core_event_groups(self.model_id):
             self.log.info("Collecting event group: %s", group.name)
             try:
                 stat_result = self.stat(
@@ -440,7 +442,7 @@ class PerfCollector(BaseCollector):
             return self._available_events
 
         self._available_events = set()
-        for group in get_all_core_event_groups():
+        for group in get_all_core_event_groups(self.model_id):
             for name, event in group.events.items():
                 event_str = f"{self.model.pmu_name}/{event}/"
                 result = run_cmd(

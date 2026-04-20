@@ -61,7 +61,7 @@ KUNPENG_MODELS: Dict[str, KunpengModel] = {
     "930": KunpengModel(
         model="930",
         core_name="TaiShan V200",
-        pmu_name="armv8_pmuv3",
+        pmu_name="armv8_pmuv3_0",
         programmable_counters=6,
         dispatch_width=8,
         l1d_cache_kb=64,
@@ -252,6 +252,83 @@ UNCORE_CONFIG: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Kunpeng 930 core PMU event groups
+# TaiShan V200 lacks: vfp_spec, ase_spec, ld_spec, st_spec, br_immed_spec,
+#   br_indirect_spec, br_return_spec, bus_cycles
+# It provides: br_pred, br_mis_pred, br_return_retired, l1d_cache_lmiss_rd,
+#   l1i_cache_lmiss, ld_align_lat, st_align_lat
+# ---------------------------------------------------------------------------
+
+CORE_EVENT_GROUPS_930: Dict[str, EventGroup] = {
+    "topdown_l1": CORE_EVENT_GROUPS["topdown_l1"],
+    "instruction_mix": EventGroup(
+        name="instruction_mix",
+        description="Instruction type breakdown (930-compatible)",
+        events={
+            "inst_retired": "inst_retired",
+            "br_retired": "br_retired",
+            "inst_spec": "inst_spec",
+        },
+        formulas={
+            "branch_ratio": "br_retired / inst_retired",
+            "speculation_ratio": "inst_spec / inst_retired",
+        },
+    ),
+    "cache_l1": EventGroup(
+        name="cache_l1",
+        description="L1 instruction and data cache (930 with latency)",
+        events={
+            "l1d_cache": "l1d_cache",
+            "l1d_cache_refill": "l1d_cache_refill",
+            "l1d_cache_lmiss_rd": "l1d_cache_lmiss_rd",
+            "l1i_cache": "l1i_cache",
+            "l1i_cache_refill": "l1i_cache_refill",
+            "inst_retired": "inst_retired",
+        },
+        formulas={
+            "l1d_miss_rate": "l1d_cache_refill / l1d_cache",
+            "l1d_mpki": "(l1d_cache_refill / inst_retired) * 1000",
+            "l1i_miss_rate": "l1i_cache_refill / l1i_cache",
+            "l1i_mpki": "(l1i_cache_refill / inst_retired) * 1000",
+        },
+    ),
+    "cache_l2_l3": CORE_EVENT_GROUPS["cache_l2_l3"],
+    "branch_prediction": EventGroup(
+        name="branch_prediction",
+        description="Branch prediction accuracy (930-compatible)",
+        events={
+            "br_retired": "br_retired",
+            "br_mis_pred_retired": "br_mis_pred_retired",
+            "br_pred": "br_pred",
+            "br_mis_pred": "br_mis_pred",
+            "br_return_retired": "br_return_retired",
+            "inst_retired": "inst_retired",
+        },
+        formulas={
+            "mispredict_rate": "br_mis_pred_retired / br_retired",
+            "branch_mpki": "(br_mis_pred_retired / inst_retired) * 1000",
+            "pred_accuracy": "br_pred / (br_pred + br_mis_pred)",
+            "return_ratio": "br_return_retired / br_retired",
+            "branch_density": "br_retired / inst_retired",
+        },
+    ),
+    "memory_access": EventGroup(
+        name="memory_access",
+        description="Memory access and TLB behavior (930-compatible)",
+        events={
+            "mem_access": "mem_access",
+            "bus_access": "bus_access",
+            "dtlb_walk": "dtlb_walk",
+            "itlb_walk": "itlb_walk",
+            "inst_retired": "inst_retired",
+        },
+        formulas={
+            "tlb_mpki": "((dtlb_walk + itlb_walk) / inst_retired) * 1000",
+        },
+    ),
+}
+
 # Default uncore event groups (Kunpeng 920)
 UNCORE_EVENT_GROUPS = UNCORE_EVENTS_920
 
@@ -284,9 +361,13 @@ def get_kunpeng_model(model_id: str = "920") -> KunpengModel:
     return KUNPENG_MODELS[model_id]
 
 
-def get_all_core_event_groups() -> List[EventGroup]:
+def get_all_core_event_groups(model_id: str = "920") -> List[EventGroup]:
     """Return all core PMU event groups in recommended collection order."""
-    return [CORE_EVENT_GROUPS[name] for name in [
+    if model_id == "930":
+        groups = CORE_EVENT_GROUPS_930
+    else:
+        groups = CORE_EVENT_GROUPS
+    return [groups[name] for name in [
         "topdown_l1", "instruction_mix", "cache_l1",
         "cache_l2_l3", "branch_prediction", "memory_access",
     ]]

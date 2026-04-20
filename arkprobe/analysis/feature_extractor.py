@@ -126,7 +126,7 @@ class FeatureExtractor:
             bad_speculation=round(clamp(bad_speculation), 4),
         )
 
-        # Instruction mix
+        # Instruction mix — 930 lacks vfp_spec/ase_spec/ld_spec/st_spec
         inst = im.get("inst_retired", 1)
         br = im.get("br_retired", 0)
         fp = im.get("vfp_spec", 0)
@@ -139,8 +139,8 @@ class FeatureExtractor:
         vector_ratio = vec / inst if inst > 0 else 0.0
         load_ratio = ld / inst if inst > 0 else 0.0
         store_ratio = st / inst if inst > 0 else 0.0
-        integer_ratio = max(0.0, 1.0 - branch_ratio - fp_ratio - vector_ratio
-                            - load_ratio - store_ratio)
+        known_ratio = branch_ratio + fp_ratio + vector_ratio + load_ratio + store_ratio
+        integer_ratio = max(0.0, 1.0 - known_ratio)
 
         instruction_mix = InstructionMix(
             integer_ratio=round(integer_ratio, 4),
@@ -222,10 +222,12 @@ class FeatureExtractor:
         inst = bp.get("inst_retired", 1) or 1
         br = bp.get("br_retired", 1) or 1
         br_mis = bp.get("br_mis_pred_retired", 0)
+
+        # 920: br_immed_spec, br_indirect_spec, br_return_spec
+        # 930: br_pred, br_mis_pred, br_return_retired (no spec variants)
         br_immed = bp.get("br_immed_spec", 0)
         br_indirect = bp.get("br_indirect_spec", 0)
         br_return = bp.get("br_return_spec", 0)
-
         total_spec = br_immed + br_indirect + br_return
 
         return BranchBehavior(
