@@ -59,6 +59,7 @@ collection:
   ebpf_probes:
     - cache_stats
     - lock_contention
+    - mem_access
 
 scalability:
   enabled: true

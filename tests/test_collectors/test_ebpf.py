@@ -26,19 +26,53 @@ class TestEbpfCollector:
         """Test collector initialization."""
         assert collector.output_dir == temp_output_dir
         assert collector.backend == "auto"
-        assert collector.BCC_TOOLS is not None
-        assert len(collector.BCC_TOOLS) == 5
+        assert collector.BCC_TOOL_BASES is not None
+        assert len(collector.BCC_TOOL_BASES) == 7
+        assert len(collector.BCC_TOOLS) == 7
 
     def test_bcc_tools_list(self):
         """Verify BCC tools list is correct."""
-        expected = [
-            "biolatency-bpfcc",
-            "cachestat-bpfcc",
-            "tcprtt-bpfcc",
-            "tcpconnlat-bpfcc",
-            "offcputime-bpfcc",
+        expected_bases = [
+            "biolatency",
+            "cachestat",
+            "tcprtt",
+            "tcpconnlat",
+            "offcputime",
+            "runqlat",
+            "runqlen",
         ]
-        assert EbpfCollector.BCC_TOOLS == expected
+        expected_canonical = [f"{b}-bpfcc" for b in expected_bases]
+        assert EbpfCollector.BCC_TOOL_BASES == expected_bases
+        assert EbpfCollector.BCC_TOOLS == expected_canonical
+
+    def test_resolve_bcc_tool_bpfcc_suffix(self):
+        """Test _resolve_bcc_tool prefers -bpfcc variant when available."""
+        with patch("arkprobe.collectors.ebpf_collector.shutil.which") as mock_which:
+            mock_which.side_effect = lambda x: "/usr/bin/biolatency-bpfcc" if "-bpfcc" in x else None
+            path = EbpfCollector._resolve_bcc_tool("biolatency")
+            assert path == "biolatency-bpfcc"
+
+    def test_resolve_bcc_tool_openeuler_path(self):
+        """Test _resolve_bcc_tool falls back to openEuler path when -bpfcc not found."""
+        def fake_which(x):
+            if x == "biolatency-bpfcc":
+                return None
+            if x == "/usr/share/bcc/tools/biolatency":
+                return "/usr/share/bcc/tools/biolatency"
+            return None
+        with patch("arkprobe.collectors.ebpf_collector.shutil.which", side_effect=fake_which):
+            path = EbpfCollector._resolve_bcc_tool("biolatency")
+            assert path == "/usr/share/bcc/tools/biolatency"
+
+    def test_get_tool_path_caches(self):
+        """Test _get_tool_path caches resolved paths."""
+        collector = EbpfCollector(output_dir=Path("/tmp"))
+        with patch.object(collector, "_resolve_bcc_tool", return_value="/usr/share/bcc/tools/biolatency") as mock_resolve:
+            path1 = collector._get_tool_path("biolatency")
+            path2 = collector._get_tool_path("biolatency")
+            assert path1 == "/usr/share/bcc/tools/biolatency"
+            assert path2 == "/usr/share/bcc/tools/biolatency"
+            mock_resolve.assert_called_once()  # second call should use cache
 
     @patch("arkprobe.collectors.ebpf_collector.shutil.which")
     def test_is_available_all_tools_present(self, mock_which, collector):
@@ -50,19 +84,21 @@ class TestEbpfCollector:
         assert available is True
         assert reason == ""
 
-    @patch("arkprobe.collectors.ebpf_collector.shutil.which")
+    @patch("arkprobe.collectors.ebpf_collector.EbpfCollector._check_bcc")
     @patch("arkprobe.collectors.ebpf_collector.run_cmd")
-    def test_is_available_bpftrace_fallback(self, mock_run_cmd, mock_which, collector):
-        """Test is_available returns True with bpftrace fallback."""
-        collector._bcc_available = None  # Reset cache
+    def test_is_available_bpftrace_fallback(self, mock_run_cmd, mock_check_bcc, collector):
+        """Test is_available returns True with bpftrace fallback when no BCC tools."""
+        collector._bcc_available = None
         collector._bpftrace_available = None
-        # First 5 calls: BCC tools not available
-        # Sixth call: bpftrace available
-        mock_which.side_effect = [
-            None, None, None, None, None,
-            "/usr/bin/bpftrace",  # bpftrace
-        ]
-        mock_run_cmd.return_value = MagicMock(ok=True)
+        # Force _check_bcc to return False so we fall through to bpftrace check
+        mock_check_bcc.return_value = False
+
+        def run_cmd_side_effect(cmd, *args, **kwargs):
+            if cmd[0] == "which" and cmd[1] == "bpftrace":
+                return MagicMock(ok=True, stdout="", stderr="")
+            return MagicMock(ok=False, stdout="", stderr="")
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
         available, reason = collector.is_available()
         assert available is True
         assert reason == "bpftrace fallback"
@@ -174,3 +210,61 @@ class TestEbpfCollector:
             ],
         )
         assert hist.p99 == 10  # Should return the high of bucket containing p99
+
+    def test_trace_mem_access(self, collector):
+        """Test trace_mem_access parses bpftrace output correctly."""
+        mock_output = """
+@page_faults: 5000
+@mmap_calls: 120
+@mmap_anon: 100
+@mprotect_calls: 30
+@brk_calls: 80
+@elapsed: 10
+"""
+        with patch("arkprobe.collectors.ebpf_collector.run_cmd") as mock_run:
+            mock_run.return_value = MagicMock(ok=True, stdout=mock_output, stderr="")
+            result = collector.trace_mem_access(duration_sec=10)
+            assert "page_faults_per_sec" in result
+            assert "mmap_calls_per_sec" in result
+            assert "anonymous_mmap_ratio" in result
+            assert "access_pattern" in result
+            assert result["page_faults_per_sec"] == 500.0
+            assert result["mmap_calls_per_sec"] == 12.0
+            assert result["anonymous_mmap_ratio"] == pytest.approx(0.8333, abs=0.01)
+
+    def test_trace_sched_latency(self, collector):
+        """Test trace_sched_latency parses runqlat + runqlen output."""
+        mock_histogram_output = """    [0, 1)         100  ||
+    [1, 2)         200  |||||
+    [2, 4)         150  |||||
+    [4, 8)          50  ||
+"""
+        mock_len_output = """    avg = 2.5
+"""
+        with patch("arkprobe.collectors.ebpf_collector.run_cmd") as mock_run_cmd:
+            mock_run_cmd.side_effect = [
+                MagicMock(ok=True, stdout=mock_histogram_output, stderr=""),
+                MagicMock(ok=True, stdout=mock_len_output, stderr=""),
+            ]
+            result = collector.trace_sched_latency(duration_sec=10)
+            assert "avg_sched_latency_us" in result
+            assert "p99_sched_latency_us" in result
+            assert "avg_runqlen" in result
+            assert "histogram" in result
+            assert "unit" in result
+            assert result["avg_runqlen"] == 2.5
+
+    def test_trace_sched_latency_runqlen_fallback(self, collector):
+        """Test trace_sched_latency falls back when avg= not found."""
+        mock_histogram_output = """    [0, 1)         50  |
+"""
+        mock_len_output = """runqlen  3
+runqlen  4
+"""
+        with patch("arkprobe.collectors.ebpf_collector.run_cmd") as mock_run_cmd:
+            mock_run_cmd.side_effect = [
+                MagicMock(ok=True, stdout=mock_histogram_output, stderr=""),
+                MagicMock(ok=True, stdout=mock_len_output, stderr=""),
+            ]
+            result = collector.trace_sched_latency(duration_sec=10)
+            assert result["avg_runqlen"] == 3.0

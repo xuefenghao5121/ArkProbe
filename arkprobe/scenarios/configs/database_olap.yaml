@@ -58,6 +58,7 @@ collection:
   ebpf_probes:
     - io_latency
     - cache_stats
+    - sched_latency
 
 scalability:
   enabled: true

@@ -10,7 +10,7 @@ that are essential for accurate memory bandwidth and LLC measurements.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -187,20 +187,17 @@ CORE_EVENT_GROUPS: Dict[str, EventGroup] = {
 }
 
 # ---------------------------------------------------------------------------
-# Uncore PMU events (Kunpeng-specific)
+# Uncore PMU event templates (model-specific)
 # ---------------------------------------------------------------------------
 
-UNCORE_EVENT_GROUPS: Dict[str, EventGroup] = {
+# Kunpeng 920: 4 DDRC per SCCL (ddrc0-3), 4 L3C per SCCL (l3c0-3)
+UNCORE_EVENTS_920 = {
     "ddr_bandwidth": EventGroup(
         name="ddr_bandwidth",
         description="DDR controller read/write bandwidth",
         events={
             "flux_rd": "hisi_sccl{sccl_id}_ddrc{ddrc_id}/flux_rd/",
             "flux_wr": "hisi_sccl{sccl_id}_ddrc{ddrc_id}/flux_wr/",
-        },
-        formulas={
-            "read_bandwidth_gbps": "(flux_rd * 32) / (duration_sec * 1e9)",
-            "write_bandwidth_gbps": "(flux_wr * 32) / (duration_sec * 1e9)",
         },
     ),
     "l3_cache_uncore": EventGroup(
@@ -212,16 +209,73 @@ UNCORE_EVENT_GROUPS: Dict[str, EventGroup] = {
             "wr_hit_cpipe": "hisi_sccl{sccl_id}_l3c{l3c_id}/wr_hit_cpipe/",
             "wr_miss_cpipe": "hisi_sccl{sccl_id}_l3c{l3c_id}/wr_miss_cpipe/",
         },
-        formulas={
-            "l3_hit_rate": "(rd_hit_cpipe + wr_hit_cpipe) / (rd_hit_cpipe + rd_miss_cpipe + wr_hit_cpipe + wr_miss_cpipe)",
+    ),
+}
+
+# Kunpeng 930: 4 DDRC per SCCL (ddrc0_0, ddrc0_1, ddrc2_0, ddrc2_1),
+#              10 L3C per SCCL (l3c0-9), 4 HHA per SCCL, 4 SLLC per SCCL
+UNCORE_EVENTS_930 = {
+    "ddr_bandwidth": EventGroup(
+        name="ddr_bandwidth",
+        description="DDR controller read/write bandwidth",
+        events={
+            "flux_rd": "hisi_sccl{sccl_id}_{ddrc_subpath}/flux_rd/",
+            "flux_wr": "hisi_sccl{sccl_id}_{ddrc_subpath}/flux_wr/",
+        },
+    ),
+    "l3_cache_uncore": EventGroup(
+        name="l3_cache_uncore",
+        description="L3 cache from uncore PMU",
+        events={
+            "dat_access": "hisi_sccl{sccl_id}_l3c{l3c_id}/dat_access/",
+            "l3c_hit": "hisi_sccl{sccl_id}_l3c{l3c_id}/l3c_hit/",
+            "l3c_ref": "hisi_sccl{sccl_id}_l3c{l3c_id}/l3c_ref/",
         },
     ),
 }
+
+# Model-specific SCCL IDs and unit configurations
+UNCORE_CONFIG: Dict[str, Dict[str, Any]] = {
+    "920": {
+        "sccl_ids": [1, 3, 5, 7],
+        "ddrc_unit_count": 4,
+        "ddrc_subpath": "{ddrc_id}",       # ddrc0, ddrc1, ddrc2, ddrc3
+        "l3c_unit_count": 4,
+        "l3c_event_type": "920",            # Use 920-style events
+    },
+    "930": {
+        "sccl_ids": [1, 3, 9, 11],
+        "ddrc_unit_count": 4,
+        "ddrc_subpath": "{ddrc_subpath}",  # ddrc0_0, ddrc0_1, ddrc2_0, ddrc2_1
+        "l3c_unit_count": 10,
+        "l3c_event_type": "930",           # Use 930-style events
+    },
+}
+
+# Default uncore event groups (Kunpeng 920)
+UNCORE_EVENT_GROUPS = UNCORE_EVENTS_920
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def get_uncore_config(model_id: str) -> Dict[str, Any]:
+    """Get uncore PMU configuration for a specific Kunpeng model."""
+    if model_id not in UNCORE_CONFIG:
+        raise ValueError(
+            f"Unknown Kunpeng model for uncore: {model_id}. "
+            f"Known: {list(UNCORE_CONFIG)}"
+        )
+    return UNCORE_CONFIG[model_id]
+
+
+def get_uncore_event_groups(model_id: str = "920") -> Dict[str, EventGroup]:
+    """Get uncore event groups for a specific Kunpeng model."""
+    if model_id == "930":
+        return UNCORE_EVENTS_930
+    return UNCORE_EVENTS_920
+
 
 def get_kunpeng_model(model_id: str = "920") -> KunpengModel:
     """Get hardware config for a Kunpeng model."""
@@ -258,25 +312,48 @@ def resolve_uncore_events(
     group: EventGroup,
     sccl_ids: Optional[List[int]] = None,
     unit_ids: Optional[List[int]] = None,
+    model_id: str = "920",
 ) -> List[str]:
     """Resolve uncore event templates with actual SCCL and unit IDs.
 
-    Kunpeng uncore PMUs are named like:
-    hisi_sccl3_ddrc0/flux_rd/  (SCCL node 3, DDR controller 0)
-    hisi_sccl3_l3c0/rd_hit_cpipe/  (SCCL node 3, L3 cache 0)
-    """
-    if sccl_ids is None:
-        sccl_ids = [1, 3, 5, 7]  # Default 4-socket Kunpeng 920
-    if unit_ids is None:
-        unit_ids = [0, 1, 2, 3]  # 4 units per SCCL
+    Kunpeng 920 uncore PMUs:
+      hisi_sccl3_ddrc0/flux_rd/  (SCCL node 3, DDR controller 0)
+      hisi_sccl3_l3c0/rd_hit_cpipe/  (SCCL node 3, L3 cache 0)
 
-    resolved = []
+    Kunpeng 930 uncore PMUs:
+      hisi_sccl3_ddrc0_0/flux_rd/  (SCCL node 3, DDRC sub-row 0, col 0)
+      hisi_sccl3_l3c0/dat_access/  (SCCL node 3, L3 cache 0)
+    """
+    config = get_uncore_config(model_id)
+    if sccl_ids is None:
+        sccl_ids = config["sccl_ids"]
+
+    resolved: List[str] = []
     for event_str in group.events.values():
         for sccl in sccl_ids:
-            for uid in unit_ids:
-                resolved.append(
-                    event_str.replace("{sccl_id}", str(sccl))
-                             .replace("{ddrc_id}", str(uid))
-                             .replace("{l3c_id}", str(uid))
-                )
+            if model_id == "930":
+                # DDRC uses {ddrc_subpath} placeholder
+                if "{ddrc_subpath}" in event_str:
+                    ddrc_subpaths = ["ddrc0_0", "ddrc0_1", "ddrc2_0", "ddrc2_1"]
+                    for subpath in ddrc_subpaths:
+                        resolved.append(
+                            event_str.replace("{sccl_id}", str(sccl))
+                                     .replace("{ddrc_subpath}", subpath)
+                        )
+                # L3C uses {l3c_id} — expand 0..9
+                if "{l3c_id}" in event_str:
+                    for lid in range(config["l3c_unit_count"]):
+                        resolved.append(
+                            event_str.replace("{sccl_id}", str(sccl))
+                                     .replace("{l3c_id}", str(lid))
+                        )
+            else:
+                # Kunpeng 920: DDRC and L3C share same unit index 0-3
+                unit_count = config["ddrc_unit_count"]
+                for uid in range(unit_count):
+                    resolved.append(
+                        event_str.replace("{sccl_id}", str(sccl))
+                                 .replace("{ddrc_id}", str(uid))
+                                 .replace("{l3c_id}", str(uid))
+                    )
     return resolved

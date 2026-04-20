@@ -58,6 +58,7 @@ collection:
     - simd_utilization
   ebpf_probes:
     - cache_stats
+    - mem_access
 
 scalability:
   enabled: true

@@ -23,6 +23,8 @@ from .arm_events import (
     build_perf_event_string,
     get_all_core_event_groups,
     get_kunpeng_model,
+    get_uncore_config,
+    get_uncore_event_groups,
     resolve_uncore_events,
 )
 from .base import BaseCollector, CollectionResult
@@ -111,6 +113,7 @@ class PerfCollector(BaseCollector):
     def __init__(self, output_dir: Path, kunpeng_model: str = "920"):
         super().__init__(output_dir)
         self.model = get_kunpeng_model(kunpeng_model)
+        self.model_id = kunpeng_model
         self._available_events: Optional[set] = None
 
     def collect(self, command: str = "", pid: Optional[int] = None,
@@ -454,26 +457,42 @@ class PerfCollector(BaseCollector):
     # Uncore PMU collection (DDR bandwidth, L3 cache)
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _check_perf_paranoid() -> int:
+        """Read /proc/sys/kernel/perf_event_paranoid value."""
+        try:
+            with open("/proc/sys/kernel/perf_event_paranoid") as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return -1
+
+    @staticmethod
+    def _count_not_supported(output: str) -> int:
+        """Count how many lines in perf output contain '<not supported>'."""
+        return sum(1 for line in output.splitlines() if "<not supported>" in line)
+
     def collect_uncore(
         self,
         duration_sec: int = 30,
         sccl_ids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        """Collect uncore PMU events for DDR bandwidth and L3 cache stats.
-
-        Kunpeng uncore PMUs provide:
-        - DDR controller read/write counts (flux_rd, flux_wr)
-        - L3 cache hit/miss from uncore perspective
-
-        Args:
-            duration_sec: Collection duration
-            sccl_ids: SCCL (Super CPU Cluster) IDs to monitor.
-                      Default: [1, 3, 5, 7] for 4-socket Kunpeng 920
-
-        Returns:
-            Dict with 'ddr_bandwidth' and 'l3_cache_uncore' data
-        """
+        """Collect uncore PMU events for DDR bandwidth and L3 cache stats."""
         result: Dict[str, Any] = {}
+
+        # Check perf_event_paranoid before attempting uncore collection
+        paranoid = self._check_perf_paranoid()
+        if paranoid >= 2:
+            self.log.warning(
+                "perf_event_paranoid=%d blocks uncore PMU access. "
+                "Need <=1 or root. Fix: sudo sysctl -w kernel.perf_event_paranoid=1",
+                paranoid,
+            )
+            result["uncore_blocked"] = True
+            result["uncore_blocked_reason"] = (
+                f"perf_event_paranoid={paranoid} (need <=1 or root). "
+                "Run: sudo sysctl -w kernel.perf_event_paranoid=1"
+            )
+            return result
 
         # Collect DDR bandwidth
         ddr_data = self._collect_ddr_bandwidth(duration_sec, sccl_ids)
@@ -492,18 +511,14 @@ class PerfCollector(BaseCollector):
         duration_sec: int,
         sccl_ids: Optional[List[int]] = None,
     ) -> Dict[str, float]:
-        """Collect DDR controller bandwidth using uncore PMU.
-
-        Kunpeng DDR controller events:
-        - flux_rd: Number of read beats (32 bytes each)
-        - flux_wr: Number of write beats (32 bytes each)
-        """
+        """Collect DDR controller bandwidth using uncore PMU."""
+        config = get_uncore_config(self.model_id)
         if sccl_ids is None:
-            sccl_ids = [1, 3, 5, 7]  # Default 4-socket
+            sccl_ids = config["sccl_ids"]
 
-        # Resolve uncore events for all DDR controllers
-        group = UNCORE_EVENT_GROUPS["ddr_bandwidth"]
-        events = resolve_uncore_events(group, sccl_ids, unit_ids=[0, 1, 2, 3])
+        uncore_groups = get_uncore_event_groups(self.model_id)
+        group = uncore_groups["ddr_bandwidth"]
+        events = resolve_uncore_events(group, sccl_ids, model_id=self.model_id)
 
         # Build perf command
         event_str = ",".join(events)
@@ -516,6 +531,19 @@ class PerfCollector(BaseCollector):
         if not result.ok:
             self.log.warning("Uncore DDR collection failed: %s", result.stderr[:200])
             return {}
+
+        # Detect <not supported> responses (permissions/SELinux issue)
+        not_supported_count = self._count_not_supported(result.stderr)
+        if not_supported_count > 0:
+            total_events = len(events)
+            if not_supported_count >= total_events:
+                self.log.warning(
+                    "All %d DDR uncore events returned <not supported>. "
+                    "Possible causes: perf_event_paranoid too high, SELinux enforcing, "
+                    "or insufficient privileges. Try: sudo sysctl -w kernel.perf_event_paranoid=1",
+                    total_events,
+                )
+                return {}
 
         # Parse results
         total_read_beats = 0
@@ -568,19 +596,14 @@ class PerfCollector(BaseCollector):
         duration_sec: int,
         sccl_ids: Optional[List[int]] = None,
     ) -> Dict[str, float]:
-        """Collect L3 cache statistics from uncore PMU.
-
-        Kunpeng L3 uncore events:
-        - rd_hit_cpipe: L3 read hits
-        - rd_miss_cpipe: L3 read misses
-        - wr_hit_cpipe: L3 write hits
-        - wr_miss_cpipe: L3 write misses
-        """
+        """Collect L3 cache statistics from uncore PMU."""
+        config = get_uncore_config(self.model_id)
         if sccl_ids is None:
-            sccl_ids = [1, 3, 5, 7]
+            sccl_ids = config["sccl_ids"]
 
-        group = UNCORE_EVENT_GROUPS["l3_cache_uncore"]
-        events = resolve_uncore_events(group, sccl_ids, unit_ids=[0, 1, 2, 3])
+        uncore_groups = get_uncore_event_groups(self.model_id)
+        group = uncore_groups["l3_cache_uncore"]
+        events = resolve_uncore_events(group, sccl_ids, model_id=self.model_id)
 
         event_str = ",".join(events)
         cmd = [
@@ -593,48 +616,101 @@ class PerfCollector(BaseCollector):
             self.log.warning("Uncore L3 collection failed: %s", result.stderr[:200])
             return {}
 
+        # Detect <not supported> responses (permissions/SELinux issue)
+        not_supported_count = self._count_not_supported(result.stderr)
+        if not_supported_count > 0:
+            total_events = len(events)
+            if not_supported_count >= total_events:
+                self.log.warning(
+                    "All %d L3 uncore events returned <not supported>. "
+                    "Possible causes: perf_event_paranoid too high, SELinux enforcing, "
+                    "or insufficient privileges. Try: sudo sysctl -w kernel.perf_event_paranoid=1",
+                    total_events,
+                )
+                return {}
+
         # Parse results
-        rd_hit = 0
-        rd_miss = 0
-        wr_hit = 0
-        wr_miss = 0
+        if self.model_id == "930":
+            # Kunpeng 930: dat_access, l3c_hit, l3c_ref
+            dat_access = 0
+            l3c_hit = 0
+            l3c_ref = 0
 
-        for line in result.stderr.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split(",")
-            if len(parts) < 3:
-                continue
+            for line in result.stderr.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(",")
+                if len(parts) < 3:
+                    continue
 
-            try:
-                value = float(parts[0].replace(",", ""))
-            except ValueError:
-                continue
+                try:
+                    value = float(parts[0].replace(",", ""))
+                except ValueError:
+                    continue
 
-            event_name = parts[2].strip() if len(parts) > 2 else ""
-            if "rd_hit_cpipe" in event_name:
-                rd_hit += value
-            elif "rd_miss_cpipe" in event_name:
-                rd_miss += value
-            elif "wr_hit_cpipe" in event_name:
-                wr_hit += value
-            elif "wr_miss_cpipe" in event_name:
-                wr_miss += value
+                event_name = parts[2].strip() if len(parts) > 2 else ""
+                if "dat_access" in event_name:
+                    dat_access += value
+                elif "l3c_hit" in event_name:
+                    l3c_hit += value
+                elif "l3c_ref" in event_name:
+                    l3c_ref += value
 
-        total_access = rd_hit + rd_miss + wr_hit + wr_miss
-        total_hits = rd_hit + wr_hit
-        total_misses = rd_miss + wr_miss
+            hit_rate = l3c_hit / l3c_ref if l3c_ref > 0 else 0.0
+            miss_rate = 1.0 - hit_rate
 
-        hit_rate = total_hits / total_access if total_access > 0 else 0.0
-        miss_rate = total_misses / total_access if total_access > 0 else 0.0
+            return {
+                "dat_access": dat_access,
+                "l3c_hit": l3c_hit,
+                "l3c_ref": l3c_ref,
+                "hit_rate": round(hit_rate, 4),
+                "miss_rate": round(miss_rate, 4),
+                "total_access": l3c_ref,
+            }
+        else:
+            # Kunpeng 920: rd_hit_cpipe, rd_miss_cpipe, wr_hit_cpipe, wr_miss_cpipe
+            rd_hit = 0
+            rd_miss = 0
+            wr_hit = 0
+            wr_miss = 0
 
-        return {
-            "rd_hit": rd_hit,
-            "rd_miss": rd_miss,
-            "wr_hit": wr_hit,
-            "wr_miss": wr_miss,
-            "hit_rate": round(hit_rate, 4),
-            "miss_rate": round(miss_rate, 4),
-            "total_access": total_access,
-        }
+            for line in result.stderr.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(",")
+                if len(parts) < 3:
+                    continue
+
+                try:
+                    value = float(parts[0].replace(",", ""))
+                except ValueError:
+                    continue
+
+                event_name = parts[2].strip() if len(parts) > 2 else ""
+                if "rd_hit_cpipe" in event_name:
+                    rd_hit += value
+                elif "rd_miss_cpipe" in event_name:
+                    rd_miss += value
+                elif "wr_hit_cpipe" in event_name:
+                    wr_hit += value
+                elif "wr_miss_cpipe" in event_name:
+                    wr_miss += value
+
+            total_access = rd_hit + rd_miss + wr_hit + wr_miss
+            total_hits = rd_hit + wr_hit
+            total_misses = rd_miss + wr_miss
+
+            hit_rate = total_hits / total_access if total_access > 0 else 0.0
+            miss_rate = total_misses / total_access if total_access > 0 else 0.0
+
+            return {
+                "rd_hit": rd_hit,
+                "rd_miss": rd_miss,
+                "wr_hit": wr_hit,
+                "wr_miss": wr_miss,
+                "hit_rate": round(hit_rate, 4),
+                "miss_rate": round(miss_rate, 4),
+                "total_access": total_access,
+            }

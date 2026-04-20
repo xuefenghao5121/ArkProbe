@@ -37,6 +37,7 @@ class ScenarioCollectionConfig:
     warmup_sec: int = 30
     ebpf_probes: List[str] = field(default_factory=lambda: [
         "io_latency", "lock_contention", "cache_stats", "tcp_latency",
+        "mem_access", "sched_latency",
     ])
     skip_ebpf: bool = False
     skip_scalability: bool = True

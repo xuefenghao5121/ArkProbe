@@ -70,6 +70,8 @@ collection:
     - io_latency
     - cache_stats
     - lock_contention
+    - mem_access
+    - sched_latency
 
 scalability:
   enabled: true

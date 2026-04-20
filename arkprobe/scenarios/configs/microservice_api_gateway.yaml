@@ -64,6 +64,7 @@ collection:
     - tcp_latency
     - lock_contention
     - io_latency
+    - sched_latency
 
 scalability:
   enabled: false

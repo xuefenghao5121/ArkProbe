@@ -6,7 +6,9 @@ Provides non-intrusive system-level tracing for:
 - Off-CPU analysis
 - TCP latency
 - Cache statistics
+- Network statistics
 - Memory access patterns
+- Scheduler latency
 """
 
 from __future__ import annotations
@@ -65,20 +67,54 @@ class LatencyHistogram:
 class EbpfCollector(BaseCollector):
     """eBPF-based system-level observation using BCC tools and bpftrace."""
 
-    # All BCC tools required by probes
-    BCC_TOOLS = [
-        "biolatency-bpfcc",
-        "cachestat-bpfcc",
-        "tcprtt-bpfcc",
-        "tcpconnlat-bpfcc",
-        "offcputime-bpfcc",
+    # BCC tool base names (without -bpfcc suffix).
+    # On Ubuntu/Debian the binaries are named <base>-bpfcc,
+    # on openEuler/RHEL they live under /usr/share/bcc/tools/<base>.
+    BCC_TOOL_BASES = [
+        "biolatency",
+        "cachestat",
+        "tcprtt",
+        "tcpconnlat",
+        "offcputime",
+        "runqlat",
+        "runqlen",
     ]
+
+    # Canonical names used in deps/registry and error messages
+    BCC_TOOLS = [f"{base}-bpfcc" for base in BCC_TOOL_BASES]
+
+    @staticmethod
+    def _resolve_bcc_tool(base_name: str) -> str:
+        """Return the first resolvable path for a BCC tool.
+
+        Tries in order:
+        1. <base>-bpfcc  (Ubuntu/Debian convention)
+        2. /usr/share/bcc/tools/<base>  (openEuler/RHEL convention)
+        3. <base>  (bare name, in case on PATH)
+        """
+        candidates = [
+            f"{base_name}-bpfcc",
+            f"/usr/share/bcc/tools/{base_name}",
+            base_name,
+        ]
+        for c in candidates:
+            if shutil.which(c):
+                return c
+        return f"{base_name}-bpfcc"  # fallback to canonical name
 
     def __init__(self, output_dir: Path, backend: str = "auto"):
         super().__init__(output_dir)
         self.backend = backend
         self._bpftrace_available: Optional[bool] = None
         self._bcc_available: Optional[bool] = None
+        # Cache resolved tool paths: base_name -> resolved_path
+        self._resolved_tools: Dict[str, str] = {}
+
+    def _get_tool_path(self, base_name: str) -> str:
+        """Get resolved BCC tool path, caching results."""
+        if base_name not in self._resolved_tools:
+            self._resolved_tools[base_name] = self._resolve_bcc_tool(base_name)
+        return self._resolved_tools[base_name]
 
     def is_available(self) -> tuple[bool, str]:
         """Check if eBPF collection is possible.
@@ -96,9 +132,9 @@ class EbpfCollector(BaseCollector):
 
         # Determine what's missing
         missing_tools = []
-        for tool in self.BCC_TOOLS:
-            if not shutil.which(tool):
-                missing_tools.append(tool)
+        for base in self.BCC_TOOL_BASES:
+            if not shutil.which(self._get_tool_path(base)):
+                missing_tools.append(f"{base}-bpfcc")
         if not self._check_bpftrace():
             missing_tools.append("bpftrace")
 
@@ -138,6 +174,8 @@ class EbpfCollector(BaseCollector):
             "cache_stats": self.trace_cache_stats,
             "tcp_latency": self.trace_tcp_latency,
             "network_stats": self.trace_network_stats,
+            "mem_access": self.trace_mem_access,
+            "sched_latency": self.trace_sched_latency,
         }
 
         for probe_name in probes:
@@ -169,9 +207,10 @@ class EbpfCollector(BaseCollector):
         self, duration_sec: int = 30, pid: Optional[int] = None
     ) -> Dict[str, Any]:
         """Trace block I/O latency distribution using biolatency (BCC)."""
-        cmd = ["biolatency-bpfcc", "-j", str(duration_sec), "1"]
+        tool = self._get_tool_path("biolatency")
+        cmd = [tool, "-j", str(duration_sec), "1"]
         if pid is not None:
-            cmd = ["biolatency-bpfcc", "-j", "-p", str(pid), str(duration_sec), "1"]
+            cmd = [tool, "-j", "-p", str(pid), str(duration_sec), "1"]
 
         result = run_cmd(cmd, timeout_sec=duration_sec + 30)
         histogram = self._parse_bcc_histogram(result.stdout)
@@ -216,9 +255,10 @@ class EbpfCollector(BaseCollector):
         self, duration_sec: int = 30, pid: Optional[int] = None
     ) -> Dict[str, Any]:
         """Trace off-CPU time to identify where threads wait."""
-        cmd = ["offcputime-bpfcc", "-f", str(duration_sec)]
+        tool = self._get_tool_path("offcputime")
+        cmd = [tool, "-f", str(duration_sec)]
         if pid is not None:
-            cmd = ["offcputime-bpfcc", "-f", "-p", str(pid), str(duration_sec)]
+            cmd = [tool, "-f", "-p", str(pid), str(duration_sec)]
 
         result = run_cmd(cmd, timeout_sec=duration_sec + 30)
 
@@ -247,7 +287,8 @@ class EbpfCollector(BaseCollector):
         self, duration_sec: int = 30, pid: Optional[int] = None
     ) -> Dict[str, Any]:
         """Collect page cache hit/miss statistics using cachestat."""
-        cmd = ["cachestat-bpfcc", str(duration_sec), "1"]
+        tool = self._get_tool_path("cachestat")
+        cmd = [tool, str(duration_sec), "1"]
         result = run_cmd(cmd, timeout_sec=duration_sec + 30)
 
         total_hits = 0
@@ -272,7 +313,8 @@ class EbpfCollector(BaseCollector):
         self, duration_sec: int = 30, pid: Optional[int] = None
     ) -> Dict[str, Any]:
         """Trace TCP connection and round-trip latencies."""
-        cmd = ["tcprtt-bpfcc", "-d", str(duration_sec)]
+        tool = self._get_tool_path("tcprtt")
+        cmd = [tool, "-d", str(duration_sec)]
         if pid is not None:
             cmd.extend(["-p", str(pid)])
 
@@ -280,9 +322,10 @@ class EbpfCollector(BaseCollector):
 
         # Fallback to tcpconnlat if tcprtt not available
         if not result.ok:
-            cmd = ["tcpconnlat-bpfcc", str(duration_sec)]
+            lat_tool = self._get_tool_path("tcpconnlat")
+            cmd = [lat_tool, str(duration_sec)]
             if pid:
-                cmd = ["tcpconnlat-bpfcc", "-p", str(pid), str(duration_sec)]
+                cmd = [lat_tool, "-p", str(pid), str(duration_sec)]
             result = run_cmd(cmd, timeout_sec=duration_sec + 30)
 
         latencies = []
@@ -348,6 +391,101 @@ class EbpfCollector(BaseCollector):
             "bandwidth_tx_mbps": (total["tx_bytes"] * 8) / (duration_sec * 1e6),
         }
 
+    def trace_mem_access(
+        self, duration_sec: int = 30, pid: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Trace memory access patterns via page faults and mmap/brk syscalls."""
+        pid_filter = f"/pid == {pid}/" if pid is not None else ""
+        program = f"""
+        tracepoint:exceptions/page_fault_user {pid_filter} {{
+            @page_faults++;
+        }}
+        tracepoint:syscalls/sys_enter_mmap {pid_filter} {{
+            @mmap_calls++;
+            if (args->flags & 0x20) {{ @mmap_anon++; }}
+        }}
+        tracepoint:syscalls/sys_enter_mprotect {pid_filter} {{
+            @mprotect_calls++;
+        }}
+        tracepoint:syscalls/sys_enter_brk {pid_filter} {{
+            @brk_calls++;
+        }}
+        interval:s:1 {{ @elapsed++; }}
+        """
+        result = self._run_bpftrace(program, duration_sec)
+
+        elapsed = max(self._extract_bpftrace_var(result, "elapsed"), 1)
+        page_faults = self._extract_bpftrace_var(result, "page_faults")
+        mmap_calls = self._extract_bpftrace_var(result, "mmap_calls")
+        mmap_anon = self._extract_bpftrace_var(result, "mmap_anon")
+        mprotect_calls = self._extract_bpftrace_var(result, "mprotect_calls")
+        brk_calls = self._extract_bpftrace_var(result, "brk_calls")
+
+        pf_per_sec = page_faults / elapsed
+        mmap_per_sec = mmap_calls / elapsed
+        anon_ratio = mmap_anon / mmap_calls if mmap_calls > 0 else 0.0
+
+        # Heuristic access pattern classification
+        if pf_per_sec > 1000 and mmap_per_sec < 10:
+            pattern = "streaming"
+        elif mmap_per_sec > 50 and pf_per_sec > 500:
+            pattern = "random"
+        else:
+            pattern = "mixed"
+
+        return {
+            "page_faults_per_sec": round(pf_per_sec, 2),
+            "mmap_calls_per_sec": round(mmap_per_sec, 2),
+            "mprotect_calls_per_sec": round(mprotect_calls / elapsed, 2),
+            "brk_calls_per_sec": round(brk_calls / elapsed, 2),
+            "anonymous_mmap_ratio": round(anon_ratio, 4),
+            "access_pattern": pattern,
+        }
+
+    def trace_sched_latency(
+        self, duration_sec: int = 30, pid: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Trace scheduler latency using BCC runqlat and runqlen."""
+        # runqlat: scheduling latency histogram
+        tool = self._get_tool_path("runqlat")
+        cmd = [tool, "-j", str(duration_sec), "1"]
+        if pid is not None:
+            cmd = [tool, "-j", "-p", str(pid), str(duration_sec), "1"]
+
+        result = run_cmd(cmd, timeout_sec=duration_sec + 30)
+        histogram = self._parse_bcc_histogram(result.stdout)
+
+        # runqlen: run queue length
+        len_tool = self._get_tool_path("runqlen")
+        len_cmd = [len_tool, str(duration_sec), "1"]
+        if pid is not None:
+            len_cmd = [len_tool, "-p", str(pid), str(duration_sec), "1"]
+
+        len_result = run_cmd(len_cmd, timeout_sec=duration_sec + 30)
+        avg_runqlen = 0.0
+        for line in len_result.stdout.splitlines():
+            m = re.match(r"\s*avg\s*=\s*([\d.]+)", line)
+            if m:
+                avg_runqlen = float(m.group(1))
+                break
+            # Fallback: parse "runqlen  N" lines and average
+            parts = line.split()
+            if len(parts) >= 2 and parts[-1].isdigit():
+                try:
+                    avg_runqlen = float(parts[-1])
+                    break
+                except ValueError:
+                    continue
+
+        return {
+            "avg_sched_latency_us": histogram.avg,
+            "p99_sched_latency_us": histogram.p99,
+            "avg_runqlen": avg_runqlen,
+            "histogram": [{"low": b.low, "high": b.high, "count": b.count}
+                          for b in histogram.buckets],
+            "unit": "us",
+        }
+
     # -----------------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------------
@@ -399,6 +537,7 @@ class EbpfCollector(BaseCollector):
         """Check if any BCC tool is available (at least one)."""
         if self._bcc_available is None:
             self._bcc_available = any(
-                shutil.which(tool) for tool in self.BCC_TOOLS
+                shutil.which(self._get_tool_path(base))
+                for base in self.BCC_TOOL_BASES
             )
         return self._bcc_available

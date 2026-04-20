@@ -44,6 +44,7 @@ class CollectionConfig(BaseModel):
     ])
     ebpf_probes: List[str] = Field(default_factory=lambda: [
         "io_latency", "lock_contention", "cache_stats", "tcp_latency",
+        "mem_access", "sched_latency",
     ])
 
 

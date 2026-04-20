@@ -36,6 +36,8 @@ collection:
     - lock_contention
     - cache_stats
     - tcp_latency
+    - mem_access
+    - sched_latency
 
 scalability:
   enabled: false

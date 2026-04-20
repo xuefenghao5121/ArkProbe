@@ -67,6 +67,7 @@ collection:
     - cache_stats
     - tcp_latency
     - io_latency
+    - mem_access
 
 scalability:
   enabled: false

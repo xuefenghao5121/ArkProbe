@@ -270,7 +270,17 @@ class FeatureExtractor:
         self, memory: MemorySubsystem, ebpf: Dict[str, Any]
     ) -> MemorySubsystem:
         """Enrich memory metrics with eBPF data."""
-        # NUMA stats would come from system collector
+        mem_access = ebpf.get("mem_access", {})
+        if mem_access:
+            pattern_str = mem_access.get("access_pattern")
+            if pattern_str:
+                from ..model.enums import AccessPattern
+                pattern_map = {
+                    "sequential": AccessPattern.STREAMING,
+                    "random": AccessPattern.RANDOM,
+                    "mixed": AccessPattern.MIXED,
+                }
+                memory.access_pattern = pattern_map.get(pattern_str, AccessPattern.MIXED)
         return memory
 
     # -----------------------------------------------------------------------
@@ -335,6 +345,7 @@ class FeatureExtractor:
         self, ebpf: Dict[str, Any], system: Dict[str, Any]
     ) -> ConcurrencyProfile:
         lock_data = ebpf.get("lock_contention", {})
+        sched_data = ebpf.get("sched_latency", {})
         cpu_util = system.get("cpu_utilization", {})
         platform = system.get("platform", {})
 
@@ -346,6 +357,8 @@ class FeatureExtractor:
             lock_contention_pct=lock_data.get("lock_contention_pct"),
             futex_wait_time_us=lock_data.get("avg_wait_ns", 0) / 1000
                                if lock_data.get("avg_wait_ns") is not None else None,
+            avg_sched_latency_us=sched_data.get("avg_sched_latency_us"),
+            p99_sched_latency_us=sched_data.get("p99_sched_latency_us"),
         )
 
     # -----------------------------------------------------------------------

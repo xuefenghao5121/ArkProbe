@@ -140,6 +140,10 @@ class ConcurrencyProfile(BaseModel):
     futex_wait_time_us: Optional[float] = Field(None,
                                                 description="Cumulative futex wait/sec")
     ipc_mechanism: Optional[IPCMechanism] = None
+    avg_sched_latency_us: Optional[float] = Field(None,
+                                                   description="Average scheduling latency (us)")
+    p99_sched_latency_us: Optional[float] = Field(None,
+                                                   description="P99 scheduling latency (us)")
 
 
 class ScalabilityProfile(BaseModel):
