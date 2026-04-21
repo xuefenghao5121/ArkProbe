@@ -18,6 +18,23 @@ CONFIGS_DIR = Path(__file__).parent / "configs"
 BUILTIN_DIR = Path(__file__).parent / "builtin"
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+# Explicit short name -> YAML filename mapping for builtin scenarios.
+# Provides unambiguous resolution regardless of external scenario names.
+BUILTIN_SHORT_NAMES: Dict[str, str] = {
+    "compute": "compute_intensive.yaml",
+    "memory": "memory_intensive.yaml",
+    "mixed": "mixed_workload.yaml",
+    "stream": "stream_bandwidth.yaml",
+    "random": "random_access.yaml",
+    "crypto": "crypto.yaml",
+    "compress": "compress.yaml",
+    "video": "video_encoding.yaml",
+    "ml": "ml_inference.yaml",
+    "oltp": "database_oltp.yaml",
+    "kv": "kv_store.yaml",
+    "web": "web_server.yaml",
+}
+
 
 class PlatformConfig(BaseModel):
     kunpeng_model: str = "920"
@@ -209,8 +226,44 @@ def list_scenarios(configs_dir: Optional[Path] = None) -> List[Dict[str, str]]:
 
 
 def get_scenario_by_name(name: str, configs_dir: Optional[Path] = None) -> Optional[ScenarioConfig]:
-    """Find a scenario by name. Supports 'builtin' as a special group name."""
-    for s in load_all_scenarios(configs_dir):
+    """Find a scenario by name. Supports 'builtin' as a special group name.
+
+    Resolution order:
+    1. Builtin short name (compute/memory/mixed/etc.) -> exact YAML file
+    2. Exact name match across all scenarios
+    3. Fuzzy substring match (case/space/underscore/hyphen insensitive)
+    """
+    # 1. Check builtin short name mapping first (highest priority)
+    yaml_file = BUILTIN_SHORT_NAMES.get(name.lower())
+    if yaml_file and BUILTIN_DIR.exists():
+        path = BUILTIN_DIR / yaml_file
+        if path.exists():
+            try:
+                return load_scenario(path)
+            except Exception:
+                pass
+
+    # Normalize input for fuzzy matching
+    name_clean = name.lower().replace("_", "").replace("-", "").replace(" ", "")
+
+    # 2. Exact match, then fuzzy substring match
+    # Prefer builtin scenarios when ambiguous
+    all_scenarios = load_all_scenarios(configs_dir)
+
+    # Exact match first
+    for s in all_scenarios:
         if s.name == name or s.name.lower().replace(" ", "_") == name.lower().replace(" ", "_"):
             return s
-    return None
+
+    # Fuzzy substring match — prefer builtin scenarios
+    builtin_match = None
+    other_match = None
+    for s in all_scenarios:
+        s_clean = s.name.lower().replace("_", "").replace("-", "").replace(" ", "")
+        if name_clean in s_clean or s_clean in name_clean:
+            if s.builtin:
+                builtin_match = s
+            else:
+                other_match = s
+
+    return builtin_match or other_match

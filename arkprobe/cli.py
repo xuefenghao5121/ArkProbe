@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import click
 from rich.console import Console
@@ -49,10 +49,38 @@ def cli(ctx, verbose, data_dir):
 @cli.command("list")
 @click.option("--check", "do_check", is_flag=True,
               help="Check dependency availability for each scenario")
-def list_scenarios_cmd(do_check):
+@click.option("--builtin-names", "builtin_only", is_flag=True,
+              help="Show builtin scenario short names and exit")
+def list_scenarios_cmd(do_check, builtin_only):
     """List available scenario configurations."""
     from .deps.checker import check_dependencies
-    from .scenarios.loader import list_scenarios_lightweight
+    from .scenarios.loader import list_scenarios_lightweight, BUILTIN_DIR, load_builtin_scenarios
+
+    # Quick lookup for builtin short names
+    if builtin_only:
+        table = Table(title="Builtin Scenario Short Names")
+        table.add_column("Short", style="cyan", width=10)
+        table.add_column("Full Name", style="green")
+        builtin_map = {
+            "compute": "Compute Intensive",
+            "memory": "Memory Intensive",
+            "mixed": "Mixed Workload",
+            "stream": "STREAM Bandwidth",
+            "random": "Random Access",
+            "crypto": "Cryptography",
+            "compress": "Compression",
+            "video": "Video Encoding",
+            "ml": "ML Inference",
+            "oltp": "Database OLTP",
+            "kv": "KV Store",
+            "web": "Web Server",
+        }
+        for short, full in builtin_map.items():
+            table.add_row(short, full)
+        console.print(table)
+        console.print("\n[dim]Usage: arkprobe collect -b <short-name>[/dim]")
+        console.print("[dim]Example: arkprobe collect -b compute[/dim]")
+        return
 
     items = list_scenarios_lightweight()
 
@@ -95,7 +123,11 @@ def list_scenarios_cmd(do_check):
 
 @cli.command()
 @click.option("--scenario", "-s", multiple=True,
-              help='Scenario name(s), "builtin", or "all"')
+              help='Scenario name(s), "builtin", "all", or use --bin for custom binary')
+@click.option("--builtin", "-b", multiple=True,
+              help="Builtin scenario name(s) by short name: compute/memory/mixed/stream/random/crypto/compress/video/ml/oltp/kv/web")
+@click.option("--binary", "--bin", "binary_path", type=click.Path(exists=True),
+              default=None, help="Direct path to workload binary (skip scenario config)")
 @click.option("--duration", "-t", type=int, default=60,
               help="Collection duration per phase (seconds)")
 @click.option("--skip-ebpf", is_flag=True,
@@ -109,7 +141,7 @@ def list_scenarios_cmd(do_check):
 @click.option("--force", is_flag=True,
               help="Force re-collection, ignoring cache")
 @click.pass_context
-def collect(ctx, scenario, duration, skip_ebpf, skip_scalability,
+def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scalability,
             kunpeng_model, cache_ttl, force):
     """Collect performance data for specified scenarios."""
     from .collectors.collector_orchestrator import (
@@ -122,28 +154,65 @@ def collect(ctx, scenario, duration, skip_ebpf, skip_scalability,
 
     data_dir = ctx.obj["data_dir"]
 
-    # Load scenarios
-    if "builtin" in scenario:
-        scenarios = load_builtin_scenarios()
-        if not scenarios:
-            console.print("[red]No builtin scenarios found.[/red]")
-            return
-    elif "all" in scenario or not scenario:
-        scenarios = load_all_scenarios()
+    # Validate options: --binary is exclusive with --scenario/--builtin
+    if binary_path and (scenario or builtin):
+        console.print("[red]Error: --binary cannot be used with --scenario or --builtin[/red]")
+        return
+
+    scenarios: List[ScenarioConfig] = []
+
+    # Handle direct binary path
+    if binary_path:
+        from .scenarios.loader import ScenarioConfig, WorkloadConfig, CollectionConfig, PlatformConfig
+        from .model.enums import ScenarioType
+        bin_name = Path(binary_path).stem
+        scenarios.append(ScenarioConfig(
+            name=bin_name,
+            type=ScenarioType.MICROSERVICE,
+            builtin=False,
+            workload=WorkloadConfig(
+                command=binary_path,
+                target_process=bin_name,
+            ),
+            collection=CollectionConfig(
+                perf_duration_sec=duration,
+                ebpf_duration_sec=0 if skip_ebpf else min(duration, 30),
+                warmup_sec=5,
+            ),
+        ))
+
+    # Load scenarios from YAML configs
     else:
-        from .scenarios.loader import get_scenario_by_name, CONFIGS_DIR
-        scenarios = []
-        for name in scenario:
-            # Try as file path first
-            p = Path(name)
-            if p.exists():
-                scenarios.append(load_scenario(p))
-            else:
-                s = get_scenario_by_name(name)
-                if s:
-                    scenarios.append(s)
+        from .scenarios.loader import load_all_scenarios, load_builtin_scenarios, load_scenario, get_scenario_by_name
+
+        # Resolve --builtin short names to full scenario objects
+        builtin_scenarios = []
+        for bname in builtin:
+            sc = get_scenario_by_name(bname)
+            if sc is None:
+                console.print(f"[red]Builtin scenario not found: {bname}[/red]")
+                console.print("Use 'arkprobe list' to see available builtin scenarios.")
+                return
+            builtin_scenarios.append(sc)
+
+        # Resolve --scenario names
+        if "builtin" in scenario or "all" in scenario or not scenario:
+            scenarios.extend(load_all_scenarios())
+        else:
+            for name in scenario:
+                p = Path(name)
+                if p.exists():
+                    scenarios.append(load_scenario(p))
                 else:
-                    console.print(f"[red]Scenario not found: {name}[/red]")
+                    sc = get_scenario_by_name(name)
+                    if sc:
+                        scenarios.append(sc)
+                    else:
+                        console.print(f"[red]Scenario not found: {name}[/red]")
+                        return
+
+        # Combine with builtin scenarios
+        scenarios.extend(builtin_scenarios)
 
     if not scenarios:
         console.print("[red]No scenarios to collect. Use 'list' to see available scenarios.[/red]")
@@ -173,17 +242,21 @@ def collect(ctx, scenario, duration, skip_ebpf, skip_scalability,
     for sc in scenarios:
         console.print(f"[cyan]>>> {sc.name}[/cyan]")
 
-        # Resolve builtin workload command to actual binary path
+        # Resolve builtin workload command to actual binary path if needed
         workload_cmd = sc.workload.command
         if sc.builtin:
+            from .workloads.build import resolve_builtin_command
             workload_cmd = resolve_builtin_command(workload_cmd)
+
+        # Format command with thread_count and duration
+        formatted_cmd = workload_cmd.format(
+            thread_count=sc.platform.recommended_cores,
+            duration=duration,
+        )
 
         config = ScenarioCollectionConfig(
             scenario_name=sc.name.lower().replace(" ", "_"),
-            workload_command=workload_cmd.format(
-                thread_count=sc.platform.recommended_cores,
-                duration=duration,
-            ),
+            workload_command=formatted_cmd,
             kunpeng_model=kunpeng_model,
             perf_duration_sec=duration,
             ebpf_duration_sec=min(duration, sc.collection.ebpf_duration_sec),
