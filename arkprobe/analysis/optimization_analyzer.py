@@ -118,6 +118,8 @@ DIFFICULTY_MULTIPLIER = {
 
 TUNING_RULES: List[TuningRule] = [
     # ===== OS Layer =====
+    # OS rules irrelevant to compute_bound / memory_bound / mixed are excluded
+    # via base_impact=0.0 so they won't appear in recommendations
     TuningRule(
         parameter_name="vm.nr_hugepages",
         display_name="Huge Pages Count",
@@ -135,6 +137,9 @@ TUNING_RULES: List[TuningRule] = [
             "codec_audio": "256",
             "search_recommend": "1024",
             "microservice": "0",
+            "memory_bound": "1024",
+            "mixed": "512",
+            "compute_bound": "0",
             "_default": "512",
         },
         base_impact={
@@ -142,6 +147,7 @@ TUNING_RULES: List[TuningRule] = [
             "bigdata_batch": 0.4, "bigdata_streaming": 0.3,
             "codec_video": 0.3, "codec_audio": 0.2,
             "search_recommend": 0.4, "microservice": 0.1,
+            "memory_bound": 0.6, "mixed": 0.3, "compute_bound": 0.0,
             "_default": 0.3,
         },
         impact_conditions=[
@@ -170,11 +176,16 @@ TUNING_RULES: List[TuningRule] = [
             "codec_audio": "always",
             "search_recommend": "madvise",
             "microservice": "madvise",
+            "memory_bound": "always",
+            "mixed": "madvise",
+            "compute_bound": "madvise",
             "_default": "madvise",
         },
         base_impact={
             "database_oltp": 0.6, "database_olap": 0.3, "database_kv": 0.7,
-            "bigdata_batch": 0.3, "_default": 0.3,
+            "bigdata_batch": 0.3,
+            "memory_bound": 0.4, "mixed": 0.2, "compute_bound": 0.1,
+            "_default": 0.3,
         },
         impact_conditions=[
             {"metric": "memory.tlb_mpki", "op": ">", "threshold": 0.5, "boost": 0.15},
@@ -201,11 +212,16 @@ TUNING_RULES: List[TuningRule] = [
             "codec_audio": "10",
             "search_recommend": "10",
             "microservice": "30",
+            "compute_bound": "1",
+            "memory_bound": "1",
+            "mixed": "10",
             "_default": "10",
         },
         base_impact={
             "database_oltp": 0.7, "database_olap": 0.4, "database_kv": 0.8,
-            "bigdata_batch": 0.3, "_default": 0.3,
+            "bigdata_batch": 0.3,
+            "compute_bound": 0.0, "memory_bound": 0.5, "mixed": 0.2,
+            "_default": 0.3,
         },
         impact_conditions=[
             {"metric": "memory.bandwidth_utilization", "op": ">", "threshold": 0.5, "boost": 0.15},
@@ -226,10 +242,14 @@ TUNING_RULES: List[TuningRule] = [
             "database_oltp": "5",
             "database_olap": "10",
             "database_kv": "5",
+            "compute_bound": "20",
+            "memory_bound": "10",
+            "mixed": "20",
             "_default": "20",
         },
         base_impact={
             "database_oltp": 0.5, "database_olap": 0.3, "database_kv": 0.5,
+            "compute_bound": 0.0, "memory_bound": 0.1, "mixed": 0.0,
             "_default": 0.15,
         },
         impact_conditions=[
@@ -251,10 +271,14 @@ TUNING_RULES: List[TuningRule] = [
             "database_oltp": "3",
             "database_olap": "5",
             "database_kv": "3",
+            "compute_bound": "10",
+            "memory_bound": "5",
+            "mixed": "10",
             "_default": "10",
         },
         base_impact={
             "database_oltp": 0.4, "database_olap": 0.2, "database_kv": 0.4,
+            "compute_bound": 0.0, "memory_bound": 0.1, "mixed": 0.0,
             "_default": 0.1,
         },
         apply_template="sysctl -w vm.dirty_background_ratio={value}",
@@ -279,11 +303,16 @@ TUNING_RULES: List[TuningRule] = [
             "codec_audio": "performance",
             "search_recommend": "performance",
             "microservice": "ondemand",
+            "compute_bound": "performance",
+            "memory_bound": "performance",
+            "mixed": "performance",
             "_default": "performance",
         },
         base_impact={
             "database_oltp": 0.6, "codec_video": 0.5,
-            "microservice": 0.2, "_default": 0.4,
+            "microservice": 0.2,
+            "compute_bound": 0.7, "memory_bound": 0.5, "mixed": 0.5,
+            "_default": 0.4,
         },
         apply_template="cpupower frequency-set -g {value}",
         verify_template="cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
@@ -300,10 +329,14 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "database_oltp": "0",
             "database_kv": "0",
+            "memory_bound": "0",
+            "mixed": "1",
+            "compute_bound": "1",
             "_default": "1",
         },
         base_impact={
             "database_oltp": 0.5, "database_kv": 0.5,
+            "memory_bound": 0.4, "mixed": 0.1, "compute_bound": 0.0,
             "_default": 0.15,
         },
         impact_conditions=[
@@ -324,10 +357,14 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "microservice": "65536",
             "search_recommend": "65536",
+            "compute_bound": "1000",
+            "memory_bound": "1000",
+            "mixed": "1000",
             "_default": "1000",
         },
         base_impact={
             "microservice": 0.5, "search_recommend": 0.4,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
             "_default": 0.1,
         },
         impact_conditions=[
@@ -349,10 +386,14 @@ TUNING_RULES: List[TuningRule] = [
             "database_oltp": "65535",
             "microservice": "65535",
             "search_recommend": "65535",
+            "compute_bound": "4096",
+            "memory_bound": "4096",
+            "mixed": "4096",
             "_default": "4096",
         },
         base_impact={
             "database_oltp": 0.3, "microservice": 0.5, "search_recommend": 0.4,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
             "_default": 0.1,
         },
         impact_conditions=[
@@ -373,10 +414,15 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "microservice": "65535",
             "search_recommend": "65535",
+            "compute_bound": "1024",
+            "memory_bound": "1024",
+            "mixed": "1024",
             "_default": "1024",
         },
         base_impact={
-            "microservice": 0.4, "search_recommend": 0.3, "_default": 0.1,
+            "microservice": 0.4, "search_recommend": 0.3,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
+            "_default": 0.1,
         },
         apply_template="sysctl -w net.ipv4.tcp_max_syn_backlog={value}",
         verify_template="sysctl net.ipv4.tcp_max_syn_backlog",
@@ -394,10 +440,14 @@ TUNING_RULES: List[TuningRule] = [
             "database_oltp": "mq-deadline",
             "database_olap": "mq-deadline",
             "database_kv": "none",
+            "compute_bound": "none",
+            "memory_bound": "none",
+            "mixed": "none",
             "_default": "none",
         },
         base_impact={
             "database_oltp": 0.4, "database_olap": 0.3, "database_kv": 0.3,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
             "_default": 0.15,
         },
         impact_conditions=[
@@ -418,10 +468,15 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "database_oltp": "10000000",
             "database_kv": "10000000",
+            "compute_bound": "3000000",
+            "memory_bound": "3000000",
+            "mixed": "3000000",
             "_default": "3000000",
         },
         base_impact={
-            "database_oltp": 0.3, "database_kv": 0.3, "_default": 0.1,
+            "database_oltp": 0.3, "database_kv": 0.3,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
+            "_default": 0.1,
         },
         impact_conditions=[
             {"metric": "concurrency.context_switches_per_sec", "op": ">", "threshold": 50000, "boost": 0.2},
@@ -441,7 +496,7 @@ TUNING_RULES: List[TuningRule] = [
         risk=TuningRiskLevel.LOW,
         description="Enable NUMA for multi-socket systems to optimize memory locality.",
         recommended_values={"_default": "True"},
-        base_impact={"_default": 0.6},
+        base_impact={"_default": 0.6, "compute_bound": 0.1, "memory_bound": 0.4, "mixed": 0.2},
         impact_conditions=[
             {"metric": "memory.numa_local_ratio", "op": "<", "threshold": 0.8, "boost": 0.2},
         ],
@@ -458,7 +513,10 @@ TUNING_RULES: List[TuningRule] = [
         risk=TuningRiskLevel.LOW,
         description="Enable hardware prefetcher for streaming/sequential memory access patterns.",
         recommended_values={"_default": "True"},
-        base_impact={"_default": 0.4},
+        base_impact={
+            "_default": 0.4,
+            "compute_bound": 0.5, "memory_bound": 0.6, "mixed": 0.5,
+        },
         impact_conditions=[
             {"metric": "cache.spatial_locality_score", "op": ">", "threshold": 0.5, "boost": 0.2},
             {"metric": "cache.l2_mpki", "op": ">", "threshold": 3.0, "boost": 0.15},
@@ -478,10 +536,15 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "database_oltp": "False",
             "database_kv": "False",
+            "compute_bound": "True",
+            "memory_bound": "True",
+            "mixed": "True",
             "_default": "True",
         },
         base_impact={
-            "database_oltp": 0.4, "database_kv": 0.4, "_default": 0.2,
+            "database_oltp": 0.4, "database_kv": 0.4,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
+            "_default": 0.2,
         },
         impact_conditions=[
             {"metric": "concurrency.lock_contention_pct", "op": ">", "threshold": 5, "boost": 0.15},
@@ -499,7 +562,10 @@ TUNING_RULES: List[TuningRule] = [
         risk=TuningRiskLevel.LOW,
         description="Set to 'performance' for consistent throughput, avoid frequency throttling.",
         recommended_values={"_default": "performance"},
-        base_impact={"_default": 0.5},
+        base_impact={
+            "_default": 0.5,
+            "compute_bound": 0.7, "memory_bound": 0.5, "mixed": 0.5,
+        },
         apply_template="# BIOS: Set Power Profile to Max Performance",
         verify_template="cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference",
         rollback_template="# BIOS: Revert Power Profile",
@@ -518,11 +584,15 @@ TUNING_RULES: List[TuningRule] = [
             "codec_video": "False",
             "codec_audio": "False",
             "microservice": "True",
+            "compute_bound": "False",
+            "memory_bound": "False",
+            "mixed": "False",
             "_default": "False",
         },
         base_impact={
             "database_oltp": 0.5, "database_kv": 0.5,
             "codec_video": 0.3, "microservice": 0.1,
+            "compute_bound": 0.4, "memory_bound": 0.3, "mixed": 0.3,
             "_default": 0.3,
         },
         apply_template="# Disable C-states via GRUB: add 'processor.max_cstate=1 intel_idle.max_cstate=0' to GRUB_CMDLINE_LINUX",
@@ -542,10 +612,15 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "microservice": "on",
             "search_recommend": "on",
+            "compute_bound": "default",
+            "memory_bound": "default",
+            "mixed": "default",
             "_default": "on",
         },
         base_impact={
-            "microservice": 0.5, "search_recommend": 0.4, "_default": 0.2,
+            "microservice": 0.5, "search_recommend": 0.4,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
+            "_default": 0.2,
         },
         impact_conditions=[
             {"metric": "network.bandwidth_rx_mbps", "op": ">", "threshold": 1000, "boost": 0.2},
@@ -566,10 +641,15 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "microservice": "max",
             "search_recommend": "max",
+            "compute_bound": "default",
+            "memory_bound": "default",
+            "mixed": "default",
             "_default": "default",
         },
         base_impact={
-            "microservice": 0.4, "search_recommend": 0.3, "_default": 0.1,
+            "microservice": 0.4, "search_recommend": 0.3,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
+            "_default": 0.1,
         },
         impact_conditions=[
             {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 100000, "boost": 0.2},
@@ -589,10 +669,15 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "database_oltp": "False",
             "database_kv": "False",
+            "compute_bound": "True",
+            "memory_bound": "True",
+            "mixed": "True",
             "_default": "True",
         },
         base_impact={
-            "database_oltp": 0.3, "database_kv": 0.3, "_default": 0.1,
+            "database_oltp": 0.3, "database_kv": 0.3,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
+            "_default": 0.1,
         },
         apply_template="systemctl stop irqbalance && systemctl disable irqbalance",
         verify_template="systemctl is-active irqbalance",
@@ -610,10 +695,14 @@ TUNING_RULES: List[TuningRule] = [
             "database_oltp": "noatime",
             "database_olap": "noatime",
             "database_kv": "noatime",
+            "compute_bound": "default",
+            "memory_bound": "default",
+            "mixed": "default",
             "_default": "default",
         },
         base_impact={
             "database_oltp": 0.4, "database_olap": 0.3, "database_kv": 0.4,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
             "_default": 0.1,
         },
         impact_conditions=[
@@ -634,10 +723,15 @@ TUNING_RULES: List[TuningRule] = [
         recommended_values={
             "microservice": "on",
             "search_recommend": "on",
+            "compute_bound": "off",
+            "memory_bound": "off",
+            "mixed": "off",
             "_default": "off",
         },
         base_impact={
-            "microservice": 0.4, "search_recommend": 0.3, "_default": 0.05,
+            "microservice": 0.4, "search_recommend": 0.3,
+            "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
+            "_default": 0.05,
         },
         impact_conditions=[
             {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 200000, "boost": 0.25},
@@ -668,7 +762,8 @@ class OptimizationAnalyzer:
         recommendations: List[OptimizationRecommendation] = []
         for rule in TUNING_RULES:
             rec = self._evaluate_rule(rule, fv, config, scenario_type)
-            recommendations.append(rec)
+            if rec is not None:
+                recommendations.append(rec)
 
         # Sort by priority descending
         recommendations.sort(key=lambda r: r.priority_score, reverse=True)
@@ -772,7 +867,7 @@ class OptimizationAnalyzer:
         fv: WorkloadFeatureVector,
         config: Optional[PlatformConfigSnapshot],
         scenario_type: str,
-    ) -> OptimizationRecommendation:
+    ) -> Optional[OptimizationRecommendation]:
         """Evaluate a single tuning rule against a workload + config."""
         # 1. Recommended value
         recommended = rule.recommended_values.get(
@@ -784,6 +879,10 @@ class OptimizationAnalyzer:
         # 3. Impact score
         base = rule.base_impact.get(
             scenario_type, rule.base_impact.get("_default", 0.2))
+
+        # Skip rules explicitly set to 0 impact for this scenario type
+        if base <= 0.0 and scenario_type in rule.base_impact:
+            return None
         boost = 0.0
         reasoning_parts = []
         for cond in rule.impact_conditions:
