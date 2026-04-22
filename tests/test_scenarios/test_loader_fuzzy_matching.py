@@ -100,11 +100,11 @@ class TestFuzzyMatching:
 
 
 class TestBuiltinAllPresent:
-    """Ensure all 12 builtin scenarios have working short names."""
+    """Ensure all 13 builtin scenarios have working short names."""
 
     def test_all_builtin_scenarios_loadable(self):
         builtins = load_builtin_scenarios()
-        assert len(builtins) == 12
+        assert len(builtins) == 13
 
     @pytest.mark.parametrize("short_name,expected_fragment", [
         ("compute", "Compute"),
@@ -119,6 +119,7 @@ class TestBuiltinAllPresent:
         ("oltp", "Database"),
         ("kv", "Key-Value"),
         ("web", "Web"),
+        ("jvm", "JVM"),
     ])
     def test_short_name_maps_to_builtin(self, short_name, expected_fragment):
         sc = get_scenario_by_name(short_name)

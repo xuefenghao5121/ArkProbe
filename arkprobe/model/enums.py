@@ -17,6 +17,9 @@ class ScenarioType(str, Enum):
     COMPUTE_BOUND = "compute_bound"
     MEMORY_BOUND = "memory_bound"
     MIXED = "mixed"
+    JVM_GENERAL = "jvm_general"
+    JVM_GC_HEAVY = "jvm_gc_heavy"
+    JVM_JIT_INTENSIVE = "jvm_jit_intensive"
 
 
 class BottleneckCategory(str, Enum):
@@ -26,6 +29,10 @@ class BottleneckCategory(str, Enum):
     BACKEND_CORE_BOUND = "backend_core_bound"
     BAD_SPECULATION = "bad_speculation"
     WELL_BALANCED = "well_balanced"
+    JVM_GC_PAUSE = "jvm_gc_pause"
+    JVM_SAFEPPOINT = "jvm_safepoint"
+    JVM_JIT_DEOPT = "jvm_jit_deopt"
+    JVM_HEAP_PRESSURE = "jvm_heap_pressure"
 
 
 class AccessPattern(str, Enum):
@@ -56,6 +63,7 @@ class TuningLayer(str, Enum):
     OS = "os"
     BIOS = "bios"
     DRIVER = "driver"
+    JVM = "jvm"
 
 
 class TuningDifficulty(str, Enum):

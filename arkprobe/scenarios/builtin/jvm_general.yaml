@@ -1,0 +1,42 @@
+scenario:
+  name: JVM General
+  type: jvm_general
+  builtin: true
+  description: Generic JVM application profiling using JFR for GC/JIT/thread introspection
+
+dependencies: []
+
+platform:
+  kunpeng_model: "920"
+  min_cores: 4
+  recommended_cores: 64
+
+workload:
+  command: ""
+  target_process: "java"
+  throughput_metric: "ops/sec"
+  throughput_regex: '(\d+\.?\d*)\s+ops/sec'
+
+collection:
+  perf_duration_sec: 60
+  warmup_sec: 10
+  event_groups:
+    - cpu_core
+    - cpu_offcore
+    - cache
+    - dram
+  jfr_enabled: true
+  jfr_duration_sec: 60
+  jfr_events:
+    - gc
+    - jit
+    - thread
+
+scalability:
+  enabled: false
+
+focus_metrics:
+  - ipc
+  - gc_pause_ratio
+  - heap_usage_ratio
+  - safepoint_ratio

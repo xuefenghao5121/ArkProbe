@@ -18,8 +18,12 @@ from ..model.schema import (
     CacheHierarchy,
     ComputeCharacteristics,
     ConcurrencyProfile,
+    GCMetrics,
     IOCharacteristics,
     InstructionMix,
+    JITMetrics,
+    JVMThreadMetrics,
+    JvmCharacteristics,
     MemorySubsystem,
     NetworkCharacteristics,
     PlatformConfigSnapshot,
@@ -69,6 +73,9 @@ class FeatureExtractor:
         cache = self._enrich_cache_with_ebpf(cache, ebpf)
         memory = self._enrich_memory_with_ebpf(memory, ebpf)
 
+        # JVM characteristics (if JFR data available)
+        jvm = self._extract_jvm(raw.jvm_data) if raw.jvm_data else None
+
         fv = WorkloadFeatureVector(
             scenario_name=scenario.name,
             scenario_type=scenario.type,
@@ -85,6 +92,7 @@ class FeatureExtractor:
             concurrency=concurrency,
             power_thermal=power_thermal,
             platform_config=platform_config,
+            jvm=jvm,
         )
 
         return fv
@@ -415,3 +423,238 @@ class FeatureExtractor:
         except Exception as e:
             log.warning("Failed to parse platform config: %s", e)
             return None
+
+    # -----------------------------------------------------------------------
+    # JVM characteristics
+    # -----------------------------------------------------------------------
+
+    def _extract_jvm(self, jvm_result: "CollectionResult") -> JvmCharacteristics:
+        """Extract JVM characteristics from JFR/jstat collection result."""
+        from ..collectors.base import CollectionResult
+
+        data = jvm_result.data
+        jdk_version = data.get("jdk_version", "unknown")
+        jfr_available = data.get("jfr_available", False)
+        events_collected = data.get("jfr_events_collected", [])
+
+        if jfr_available:
+            gc = self._extract_gc_from_jfr(data)
+            jit = self._extract_jit_from_jfr(data)
+            threads = self._extract_threads_from_jfr(data)
+        else:
+            gc = self._extract_gc_from_jstat(data)
+            jit = JITMetrics()  # jstat has no JIT data
+            threads = self._extract_threads_from_jstat(data)
+
+        return JvmCharacteristics(
+            jdk_version=jdk_version,
+            gc=gc,
+            jit=jit,
+            threads=threads,
+            jfr_available=jfr_available,
+            jfr_events_collected=events_collected,
+        )
+
+    def _extract_gc_from_jfr(self, data: Dict[str, Any]) -> GCMetrics:
+        """Extract GC metrics from JFR parsed data."""
+        jfr_parsed = data.get("jfr_parsed", {})
+        gc_events = jfr_parsed.get("gc_events", [])
+
+        gc_algorithm = "unknown"
+        young_gc_count = 0
+        young_gc_total_ms = 0.0
+        full_gc_count = 0
+        full_gc_total_ms = 0.0
+        heap_used_mb = 0.0
+        heap_max_mb = 0.0
+        metaspace_used_mb = 0.0
+
+        for event in gc_events:
+            event_type = event.get("type", "")
+            props = event.get("values", event)
+
+            if "GCConfiguration" in event_type:
+                gc_algorithm = props.get("collectorName", gc_algorithm)
+            elif "GCHeapSummary" in event_type:
+                heap_used = props.get("heapUsed", 0)
+                heap_max_val = props.get("heapSpace", {}).get("size", 0)
+                if heap_used > 0:
+                    heap_used_mb = heap_used / (1024 * 1024)
+                if heap_max_val > 0:
+                    heap_max_mb = heap_max_val / (1024 * 1024)
+            elif "OldGC" in event_type or "FullGC" in event_type:
+                full_gc_count += 1
+                duration_ns = props.get("duration", 0)
+                if isinstance(duration_ns, (int, float)):
+                    full_gc_total_ms += duration_ns / 1_000_000
+            elif "YoungGC" in event_type or "GCPhaseLevel" in event_type:
+                young_gc_count += 1
+                duration_ns = props.get("duration", 0)
+                if isinstance(duration_ns, (int, float)):
+                    young_gc_total_ms += duration_ns / 1_000_000
+            elif "MetaspaceSummary" in event_type:
+                ms_used = props.get("metaspace", {}).get("used", 0)
+                if isinstance(ms_used, (int, float)):
+                    metaspace_used_mb = ms_used / (1024 * 1024)
+
+        total_gc_ms = young_gc_total_ms + full_gc_total_ms
+        # Estimate duration from collection (default 60s)
+        duration_sec = data.get("jfr_duration_sec", 60)
+        gc_pause_ratio = total_gc_ms / (duration_sec * 1000) if duration_sec > 0 else 0.0
+        gc_pause_ratio = min(gc_pause_ratio, 1.0)
+
+        total_gc_count = young_gc_count + full_gc_count
+        avg_gc_pause_ms = total_gc_ms / total_gc_count if total_gc_count > 0 else 0.0
+
+        heap_usage_ratio = heap_used_mb / heap_max_mb if heap_max_mb > 0 else 0.0
+
+        return GCMetrics(
+            gc_algorithm=gc_algorithm,
+            young_gc_count=young_gc_count,
+            young_gc_total_ms=round(young_gc_total_ms, 1),
+            full_gc_count=full_gc_count,
+            full_gc_total_ms=round(full_gc_total_ms, 1),
+            gc_pause_ratio=round(gc_pause_ratio, 4),
+            avg_gc_pause_ms=round(avg_gc_pause_ms, 1),
+            max_gc_pause_ms=round(full_gc_total_ms, 1) if full_gc_count > 0 else round(young_gc_total_ms / max(young_gc_count, 1), 1),
+            heap_used_mb=round(heap_used_mb, 1),
+            heap_max_mb=round(heap_max_mb, 1),
+            heap_usage_ratio=round(heap_usage_ratio, 4),
+            metaspace_used_mb=round(metaspace_used_mb, 1),
+        )
+
+    def _extract_jit_from_jfr(self, data: Dict[str, Any]) -> JITMetrics:
+        """Extract JIT metrics from JFR parsed data."""
+        jfr_parsed = data.get("jfr_parsed", {})
+        jit_events = jfr_parsed.get("jit_events", [])
+
+        total_compilations = 0
+        c1_count = 0
+        c2_count = 0
+        osr_count = 0
+        deoptimization_count = 0
+
+        for event in jit_events:
+            event_type = event.get("type", "")
+            props = event.get("values", event)
+
+            if "Compilation" in event_type:
+                total_compilations += 1
+                compiler = str(props.get("compiler", "")).lower()
+                if "c1" in compiler:
+                    c1_count += 1
+                elif "c2" in compiler:
+                    c2_count += 1
+                if props.get("method", {}).get("type", "") == "OSR":
+                    osr_count += 1
+            elif "Deoptimization" in event_type:
+                deoptimization_count += 1
+
+        duration_sec = data.get("jfr_duration_sec", 60)
+        compilations_per_sec = total_compilations / duration_sec if duration_sec > 0 else 0.0
+        deopt_ratio = deoptimization_count / total_compilations if total_compilations > 0 else 0.0
+
+        return JITMetrics(
+            total_compilations=total_compilations,
+            compilations_per_sec=round(compilations_per_sec, 2),
+            deoptimization_count=deoptimization_count,
+            deopt_ratio=round(deopt_ratio, 4),
+            c1_count=c1_count,
+            c2_count=c2_count,
+            osr_count=osr_count,
+        )
+
+    def _extract_threads_from_jfr(self, data: Dict[str, Any]) -> JVMThreadMetrics:
+        """Extract thread and safepoint metrics from JFR parsed data."""
+        jfr_parsed = data.get("jfr_parsed", {})
+        thread_events = jfr_parsed.get("thread_events", [])
+        safepoint_events = jfr_parsed.get("safepoint_events", [])
+
+        total_threads = 0
+        daemon_threads = 0
+        for event in thread_events:
+            event_type = event.get("type", "")
+            if "ThreadStart" in event_type:
+                total_threads += 1
+                props = event.get("values", event)
+                if props.get("daemon", False):
+                    daemon_threads += 1
+
+        safepoint_count = len(safepoint_events) // 2  # begin+end pairs
+        safepoint_total_ms = 0.0
+        for event in safepoint_events:
+            props = event.get("values", event)
+            duration_ns = props.get("duration", 0)
+            if isinstance(duration_ns, (int, float)):
+                safepoint_total_ms += duration_ns / 1_000_000
+
+        duration_sec = data.get("jfr_duration_sec", 60)
+        safepoint_ratio = safepoint_total_ms / (duration_sec * 1000) if duration_sec > 0 else 0.0
+
+        return JVMThreadMetrics(
+            total_threads=total_threads,
+            daemon_threads=daemon_threads,
+            safepoint_count=safepoint_count,
+            safepoint_total_ms=round(safepoint_total_ms, 1),
+            safepoint_ratio=round(min(safepoint_ratio, 1.0), 4),
+        )
+
+    def _extract_gc_from_jstat(self, data: Dict[str, Any]) -> GCMetrics:
+        """Extract GC metrics from jstat output (JDK 8 fallback)."""
+        jstat = data.get("jstat_parsed", {})
+        gcutil = data.get("gcutil_parsed", {})
+
+        # jstat -gc columns: EC/EU/OC/OU/MC/MU...
+        # Estimate from gcutil: FGC (full GC count), YGC (young GC count)
+        young_gc_count = int(jstat.get("YGC", gcutil.get("YGC", 0)))
+        full_gc_count = int(jstat.get("FGC", gcutil.get("FGC", 0)))
+
+        young_gc_total_ms = float(jstat.get("YGCT", 0))
+        full_gc_total_ms = float(jstat.get("FGCT", 0))
+
+        # Heap usage from gcutil (percentage)
+        heap_usage_pct = float(gcutil.get("O", 0)) / 100.0 if gcutil.get("O") else 0.0
+
+        # Estimate heap sizes from jstat -gc (KB values)
+        old_used_kb = float(jstat.get("OU", 0))
+        old_max_kb = float(jstat.get("OC", 0))
+        eden_used_kb = float(jstat.get("EU", 0))
+        eden_max_kb = float(jstat.get("EC", 0))
+
+        heap_used_mb = (old_used_kb + eden_used_kb) / 1024
+        heap_max_mb = (old_max_kb + eden_max_kb) / 1024
+
+        total_gc_ms = young_gc_total_ms + full_gc_total_ms
+        # Approximate duration from sample count
+        sample_count = jstat.get("_sample_count", 60)
+        duration_sec = max(sample_count, 1)
+        gc_pause_ratio = total_gc_ms / (duration_sec * 1000) if duration_sec > 0 else 0.0
+
+        total_gc_count = young_gc_count + full_gc_count
+        avg_gc_pause_ms = total_gc_ms / total_gc_count if total_gc_count > 0 else 0.0
+
+        metaspace_mb = float(jstat.get("MU", 0)) / 1024
+
+        return GCMetrics(
+            gc_algorithm="unknown",
+            young_gc_count=young_gc_count,
+            young_gc_total_ms=round(young_gc_total_ms, 1),
+            full_gc_count=full_gc_count,
+            full_gc_total_ms=round(full_gc_total_ms, 1),
+            gc_pause_ratio=round(min(gc_pause_ratio, 1.0), 4),
+            avg_gc_pause_ms=round(avg_gc_pause_ms, 1),
+            max_gc_pause_ms=round(full_gc_total_ms, 1) if full_gc_count > 0 else 0.0,
+            heap_used_mb=round(heap_used_mb, 1),
+            heap_max_mb=round(heap_max_mb, 1),
+            heap_usage_ratio=round(heap_usage_pct, 4),
+            metaspace_used_mb=round(metaspace_mb, 1),
+        )
+
+    def _extract_threads_from_jstat(self, data: Dict[str, Any]) -> JVMThreadMetrics:
+        """Extract thread metrics from jstack output (JDK 8 fallback)."""
+        jstack = data.get("jstack_parsed", {})
+        return JVMThreadMetrics(
+            total_threads=jstack.get("total_threads", 0),
+            daemon_threads=jstack.get("daemon_threads", 0),
+            deadlocked_threads=jstack.get("deadlocked_threads", 0),
+        )

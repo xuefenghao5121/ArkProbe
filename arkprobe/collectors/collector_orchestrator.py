@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .base import CollectionResult
 from .ebpf_collector import EbpfCollector
+from .jfr_collector import JfrCollector
 from .perf_collector import PerfCollector, validate_command_safety
 from .system_collector import SystemCollector
 
@@ -46,6 +47,10 @@ class ScenarioCollectionConfig:
     ])
     cache_ttl_sec: int = 0
     force: bool = False
+    skip_jfr: bool = False
+    jfr_duration_sec: int = 60
+    jfr_events: List[str] = field(default_factory=lambda: ["gc", "jit", "thread"])
+    jvm_pid: Optional[int] = None
 
 
 @dataclass
@@ -56,6 +61,7 @@ class FullCollectionResult:
     ebpf_data: Dict[str, Any] = field(default_factory=dict)
     system_data: Dict[str, Any] = field(default_factory=dict)
     scalability_data: Optional[Dict[str, Any]] = None
+    jvm_data: Optional[CollectionResult] = None
     raw_files: Dict[str, Path] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     collection_duration_sec: float = 0.0
@@ -70,6 +76,7 @@ class FullCollectionResult:
             "ebpf": self.ebpf_data,
             "system": self.system_data,
             "scalability": self.scalability_data,
+            "jvm": self.jvm_data.data if self.jvm_data else None,
             "errors": self.errors,
             "collection_duration_sec": self.collection_duration_sec,
         }
@@ -86,6 +93,10 @@ class FullCollectionResult:
             ebpf_data=data.get("ebpf", {}),
             system_data=data.get("system", {}),
             scalability_data=data.get("scalability"),
+            jvm_data=CollectionResult(
+                collector_name="jfr",
+                data=data["jvm"],
+            ) if data.get("jvm") else None,
             errors=data.get("errors", []),
             collection_duration_sec=data.get("collection_duration_sec", 0),
         )
@@ -105,6 +116,7 @@ class CollectorOrchestrator:
         )
         self.ebpf = EbpfCollector(output_dir=self.output_dir / "ebpf")
         self.system = SystemCollector(output_dir=self.output_dir / "system")
+        self.jfr = JfrCollector(output_dir=self.output_dir / "jfr")
 
     def _find_cached_result(self) -> Optional[FullCollectionResult]:
         """Check for a recent cached result file within TTL."""
@@ -199,11 +211,28 @@ class CollectorOrchestrator:
                 log.warning("Uncore collection failed (non-critical): %s", e)
                 return None
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        def run_jfr():
+            if self.config.skip_jfr or self.config.jvm_pid is None:
+                return None
+            log.info("[%s] Phase 5: JFR/JVM collection (%ds, pid=%s)",
+                     self.config.scenario_name, self.config.jfr_duration_sec,
+                     self.config.jvm_pid)
+            try:
+                return self.jfr.collect(
+                    target_pid=self.config.jvm_pid,
+                    jfr_duration_sec=self.config.jfr_duration_sec,
+                    jfr_events=self.config.jfr_events,
+                )
+            except Exception as e:
+                log.error("JFR collection failed: %s", e)
+                return CollectionResult(collector_name="jfr", errors=[f"jfr: {e}"])
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {
                 pool.submit(run_perf): "perf",
                 pool.submit(run_ebpf): "ebpf",
                 pool.submit(run_uncore): "uncore",
+                pool.submit(run_jfr): "jfr",
             }
             for future in as_completed(futures):
                 label = futures[future]
@@ -223,6 +252,8 @@ class CollectorOrchestrator:
                     result.errors.extend(col_result.errors)
                 elif label == "uncore" and col_result is not None:
                     result.perf_data["uncore"] = col_result
+                elif label == "jfr" and col_result is not None:
+                    result.jvm_data = col_result
 
         result.collection_duration_sec = time.time() - start_time
         log.info("[%s] Collection complete in %.1fs with %d errors",

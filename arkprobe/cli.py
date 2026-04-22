@@ -125,7 +125,7 @@ def list_scenarios_cmd(do_check, builtin_only):
 @click.option("--scenario", "-s", multiple=True,
               help='Scenario name(s), "builtin", "all", or use --bin for custom binary')
 @click.option("--builtin", "-b", multiple=True,
-              help="Builtin scenario name(s) by short name: compute/memory/mixed/stream/random/crypto/compress/video/ml/oltp/kv/web")
+              help="Builtin scenario name(s) by short name: compute/memory/mixed/stream/random/crypto/compress/video/ml/oltp/kv/web/jvm")
 @click.option("--binary", "--bin", "binary_path", type=click.Path(exists=True),
               default=None, help="Direct path to workload binary (skip scenario config)")
 @click.option("--duration", "-t", type=int, default=60,
@@ -134,6 +134,12 @@ def list_scenarios_cmd(do_check, builtin_only):
               help="Skip eBPF collection (runs without root)")
 @click.option("--skip-scalability", is_flag=True,
               help="Skip multi-core scalability sweep")
+@click.option("--jfr/--no-jfr", default=False,
+              help="Enable JFR collection for JVM applications")
+@click.option("--jvm-pid", type=int, default=None,
+              help="Target JVM process PID for JFR collection")
+@click.option("--jfr-events", multiple=True,
+              help="JFR event groups (gc/jit/thread/memory)")
 @click.option("--kunpeng-model", type=click.Choice(["920", "930"]),
               default="920", help="Kunpeng processor model")
 @click.option("--cache-ttl", type=int, default=0,
@@ -142,7 +148,7 @@ def list_scenarios_cmd(do_check, builtin_only):
               help="Force re-collection, ignoring cache")
 @click.pass_context
 def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scalability,
-            kunpeng_model, cache_ttl, force):
+            jfr, jvm_pid, jfr_events, kunpeng_model, cache_ttl, force):
     """Collect performance data for specified scenarios."""
     from .collectors.collector_orchestrator import (
         CollectorOrchestrator,
@@ -269,6 +275,10 @@ def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scala
             skip_scalability=skip_scalability,
             cache_ttl_sec=cache_ttl,
             force=force,
+            skip_jfr=not (jfr or sc.collection.jfr_enabled),
+            jfr_duration_sec=sc.collection.jfr_duration_sec,
+            jfr_events=list(jfr_events) if jfr_events else sc.collection.jfr_events,
+            jvm_pid=jvm_pid or sc.workload.target_process_pid if hasattr(sc.workload, 'target_process_pid') else jvm_pid,
         )
 
         orchestrator = CollectorOrchestrator(config, data_dir)

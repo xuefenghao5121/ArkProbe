@@ -255,6 +255,67 @@ class PowerThermal(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# JVM characteristics models
+# ---------------------------------------------------------------------------
+
+class GCMetrics(BaseModel):
+    """Garbage collector performance metrics."""
+    gc_algorithm: str = Field("unknown", description="G1/ZGC/Parallel/Serial/CMS")
+    young_gc_count: int = Field(0, description="Young generation GC count")
+    young_gc_total_ms: float = Field(0.0, description="Total young GC time (ms)")
+    full_gc_count: int = Field(0, description="Full GC count")
+    full_gc_total_ms: float = Field(0.0, description="Total full GC time (ms)")
+    gc_pause_ratio: float = Field(0.0, ge=0.0, le=1.0,
+                                  description="GC time / total time")
+    avg_gc_pause_ms: float = Field(0.0, description="Average GC pause (ms)")
+    max_gc_pause_ms: float = Field(0.0, description="Max GC pause (ms)")
+    heap_used_mb: float = Field(0.0, description="Used heap (MB)")
+    heap_max_mb: float = Field(0.0, description="Max heap (MB)")
+    heap_usage_ratio: float = Field(0.0, ge=0.0, le=1.0,
+                                    description="Heap usage fraction")
+    metaspace_used_mb: float = Field(0.0, description="Used metaspace (MB)")
+
+
+class JITMetrics(BaseModel):
+    """Just-In-Time compiler performance metrics."""
+    total_compilations: int = Field(0, description="Total JIT compilations")
+    compilations_per_sec: float = Field(0.0, description="Compilations per second")
+    deoptimization_count: int = Field(0, description="Deoptimization count")
+    deopt_ratio: float = Field(0.0, ge=0.0, le=1.0,
+                               description="Deoptimizations / compilations")
+    c1_count: int = Field(0, description="C1 (client) compilations")
+    c2_count: int = Field(0, description="C2 (server) compilations")
+    osr_count: int = Field(0, description="On-stack replacement count")
+    code_cache_used_mb: float = Field(0.0, description="Used code cache (MB)")
+    code_cache_max_mb: float = Field(0.0, description="Max code cache (MB)")
+
+
+class JVMThreadMetrics(BaseModel):
+    """JVM thread and safepoint metrics."""
+    total_threads: int = Field(0, description="Total JVM threads")
+    active_threads: int = Field(0, description="Active (runnable) threads")
+    daemon_threads: int = Field(0, description="Daemon threads")
+    thread_contention_ratio: float = Field(0.0, ge=0.0, le=1.0,
+                                           description="Contended monitor fraction")
+    deadlocked_threads: int = Field(0, description="Deadlocked thread count")
+    safepoint_count: int = Field(0, description="Safepoint count")
+    safepoint_total_ms: float = Field(0.0, description="Total safepoint time (ms)")
+    safepoint_ratio: float = Field(0.0, ge=0.0, le=1.0,
+                                   description="Safepoint time / total time")
+
+
+class JvmCharacteristics(BaseModel):
+    """JVM runtime characteristics from JFR/jstat data."""
+    jdk_version: str = Field("", description="JDK version string")
+    gc: GCMetrics = Field(default_factory=GCMetrics)
+    jit: JITMetrics = Field(default_factory=JITMetrics)
+    threads: JVMThreadMetrics = Field(default_factory=JVMThreadMetrics)
+    jfr_available: bool = Field(False, description="Whether JFR was used")
+    jfr_events_collected: List[str] = Field(default_factory=list,
+                                            description="JFR event groups collected")
+
+
+# ---------------------------------------------------------------------------
 # The unified feature vector
 # ---------------------------------------------------------------------------
 
@@ -284,6 +345,7 @@ class WorkloadFeatureVector(BaseModel):
     concurrency: ConcurrencyProfile
     power_thermal: Optional[PowerThermal] = None
     scalability: Optional[ScalabilityProfile] = None
+    jvm: Optional[JvmCharacteristics] = None
 
     # -- Derived (computed by analysis engine) --
     bottleneck_summary: Optional[str] = None

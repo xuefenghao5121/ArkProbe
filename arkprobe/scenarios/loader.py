@@ -33,6 +33,7 @@ BUILTIN_SHORT_NAMES: Dict[str, str] = {
     "oltp": "database_oltp.yaml",
     "kv": "kv_store.yaml",
     "web": "web_server.yaml",
+    "jvm": "jvm_general.yaml",
 }
 
 
@@ -63,6 +64,9 @@ class CollectionConfig(BaseModel):
         "io_latency", "lock_contention", "cache_stats", "tcp_latency",
         "mem_access", "sched_latency",
     ])
+    jfr_enabled: bool = False
+    jfr_duration_sec: int = 60
+    jfr_events: List[str] = Field(default_factory=lambda: ["gc", "jit", "thread"])
 
 
 class ScalabilityConfig(BaseModel):

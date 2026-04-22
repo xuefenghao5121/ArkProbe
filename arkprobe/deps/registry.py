@@ -33,6 +33,12 @@ INSTALL_HINTS: dict[str, str] = {
     "runqlat-bpfcc": "yum install bcc-tools -y",
     "runqlen-bpfcc": "yum install bcc-tools -y",
     "gcc": "yum install gcc -y",
+    # JVM tools
+    "jcmd": "yum install java-11-openjdk-devel -y",
+    "jfr": "Built-in JDK 11+ (OpenJDK/Oracle). For JDK 8: jstat/jstack fallback",
+    "jstat": "yum install java-11-openjdk-devel -y",
+    "jstack": "yum install java-11-openjdk-devel -y",
+    "java": "yum install java-11-openjdk-headless -y",
 }
 
 

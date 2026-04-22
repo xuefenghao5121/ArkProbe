@@ -59,6 +59,13 @@ class BottleneckAnalyzer:
     HIGH_INDIRECT_RATIO = 0.3  # Indirect branch ratio > 30%
     LOW_IPC_THRESHOLD = 1.0    # IPC < 1.0 indicates severe stall
 
+    # JVM bottleneck thresholds
+    JVM_GC_PAUSE_RATIO_HIGH = 0.10      # GC pause > 10% of total time
+    JVM_GC_PAUSE_RATIO_MEDIUM = 0.05    # GC pause > 5% is potential bottleneck
+    JVM_SAFEPPOINT_RATIO_HIGH = 0.05    # Safepoint > 5% is significant
+    JVM_HEAP_USAGE_HIGH = 0.85          # Heap usage > 85% is pressure
+    JVM_DEOPT_RATIO_HIGH = 0.10         # Deopt ratio > 10% is abnormal
+
     def __init__(self, dispatch_width: int = 4):
         self.dispatch_width = dispatch_width
 
@@ -79,6 +86,25 @@ class BottleneckAnalyzer:
         details.extend(self._analyze_frontend(fv))
         details.extend(self._analyze_backend(fv))
         details.extend(self._analyze_bad_speculation(fv))
+
+        # JVM-specific bottleneck analysis
+        if fv.jvm is not None:
+            jvm_details = self._analyze_jvm_bottlenecks(fv)
+            details.extend(jvm_details)
+            # Override primary if JVM bottleneck is severe
+            if jvm_details:
+                worst = max(jvm_details, key=lambda d: d.score)
+                if worst.score > self._primary_score(td, primary):
+                    # Map JVM detail category to BottleneckCategory
+                    jvm_cat_map = {
+                        "JVM: GC Pause": BottleneckCategory.JVM_GC_PAUSE,
+                        "JVM: Safepoint": BottleneckCategory.JVM_SAFEPPOINT,
+                        "JVM: JIT Deoptimization": BottleneckCategory.JVM_JIT_DEOPT,
+                        "JVM: Heap Pressure": BottleneckCategory.JVM_HEAP_PRESSURE,
+                    }
+                    mapped = jvm_cat_map.get(worst.category, primary)
+                    if mapped != primary:
+                        primary = mapped
 
         notes = self._generate_architect_notes(fv, primary, details)
 
@@ -482,3 +508,95 @@ class BottleneckAnalyzer:
             f"{report.primary_bottleneck.value.replace('_', ' ').title()} "
             f"({report.primary_score:.0%})"
         )
+
+    # ------------------------------------------------------------------
+    # JVM bottleneck analysis
+    # ------------------------------------------------------------------
+
+    def _analyze_jvm_bottlenecks(self, fv: WorkloadFeatureVector) -> List[BottleneckDetail]:
+        """Detect JVM-layer bottlenecks from JFR/jstat data."""
+        if fv.jvm is None:
+            return []
+
+        details: List[BottleneckDetail] = []
+        gc = fv.jvm.gc
+        threads = fv.jvm.threads
+        jit = fv.jvm.jit
+
+        # GC pause bottleneck
+        if gc.gc_pause_ratio >= self.JVM_GC_PAUSE_RATIO_HIGH:
+            indicators = [
+                f"GC pause ratio = {gc.gc_pause_ratio:.1%} "
+                f"(young={gc.young_gc_count}, full={gc.full_gc_count})",
+                f"GC algorithm: {gc.gc_algorithm}",
+                f"Average GC pause: {gc.avg_gc_pause_ms:.1f}ms",
+            ]
+            recs = [
+                "Consider GC algorithm change (G1→ZGC for low-latency, Parallel for throughput)",
+                "Tune heap sizing: -Xms/-Xmx, -XX:NewRatio",
+                "Reduce object allocation rate to lower GC pressure",
+            ]
+            if gc.full_gc_count > 0:
+                indicators.append(f"Full GC count = {gc.full_gc_count} — potential OOM risk")
+                recs.append("Investigate Full GC triggers: heap too small or metaspace exhaustion")
+            details.append(BottleneckDetail(
+                category="JVM: GC Pause",
+                score=gc.gc_pause_ratio,
+                indicators=indicators,
+                recommendations=recs,
+            ))
+        elif gc.gc_pause_ratio >= self.JVM_GC_PAUSE_RATIO_MEDIUM:
+            details.append(BottleneckDetail(
+                category="JVM: GC Pause",
+                score=gc.gc_pause_ratio * 0.5,
+                indicators=[f"GC pause ratio = {gc.gc_pause_ratio:.1%} (moderate)"],
+                recommendations=["Monitor GC trends; consider heap tuning if ratio grows"],
+            ))
+
+        # Heap pressure
+        if gc.heap_usage_ratio >= self.JVM_HEAP_USAGE_HIGH:
+            details.append(BottleneckDetail(
+                category="JVM: Heap Pressure",
+                score=gc.heap_usage_ratio,
+                indicators=[
+                    f"Heap usage = {gc.heap_usage_ratio:.0%} "
+                    f"({gc.heap_used_mb:.0f}/{gc.heap_max_mb:.0f} MB)",
+                    f"Metaspace used = {gc.metaspace_used_mb:.1f} MB",
+                ],
+                recommendations=[
+                    "Increase max heap (-Xmx) or reduce object retention",
+                    "Profile for memory leaks if usage grows over time",
+                ],
+            ))
+
+        # Safepoint bottleneck
+        if threads.safepoint_ratio >= self.JVM_SAFEPPOINT_RATIO_HIGH:
+            details.append(BottleneckDetail(
+                category="JVM: Safepoint",
+                score=threads.safepoint_ratio,
+                indicators=[
+                    f"Safepoint ratio = {threads.safepoint_ratio:.1%} "
+                    f"(count={threads.safepoint_count}, total={threads.safepoint_total_ms:.1f}ms)",
+                ],
+                recommendations=[
+                    "Reduce safepoint triggers: disable biased locking (-XX:-UseBiasedLocking)",
+                    "Use -XX:+UseCountedLoopSafepoints for long-running loops",
+                ],
+            ))
+
+        # JIT deoptimization
+        if jit.deopt_ratio >= self.JVM_DEOPT_RATIO_HIGH and jit.total_compilations > 0:
+            details.append(BottleneckDetail(
+                category="JVM: JIT Deoptimization",
+                score=jit.deopt_ratio,
+                indicators=[
+                    f"Deoptimization ratio = {jit.deopt_ratio:.1%} "
+                    f"({jit.deoptimization_count}/{jit.total_compilations})",
+                ],
+                recommendations=[
+                    "Review hot method profiles for unstable type assumptions",
+                    "Consider -XX:CompileThreshold increase to delay compilation",
+                ],
+            ))
+
+        return details

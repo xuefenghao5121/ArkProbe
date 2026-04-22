@@ -79,7 +79,7 @@ class TestScenarioLoader:
     def test_builtin_scenarios_loadable(self):
         from arkprobe.scenarios.loader import load_builtin_scenarios
         scenarios = load_builtin_scenarios()
-        assert len(scenarios) == 12
+        assert len(scenarios) == 13
         names = {s.name for s in scenarios}
         assert "Compute Intensive (builtin)" in names
         assert "Memory Intensive (builtin)" in names
@@ -111,7 +111,7 @@ class TestScenarioLoader:
         from arkprobe.scenarios.loader import list_scenarios_lightweight
         items = list_scenarios_lightweight()
         builtin_items = [i for i in items if i["builtin"]]
-        assert len(builtin_items) == 12
+        assert len(builtin_items) == 13
 
     def test_external_scenarios_have_deps(self):
         from arkprobe.scenarios.loader import list_scenarios_lightweight
