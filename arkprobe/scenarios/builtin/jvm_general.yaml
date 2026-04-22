@@ -2,7 +2,11 @@ scenario:
   name: JVM General
   type: jvm_general
   builtin: true
-  description: Generic JVM application profiling using JFR for GC/JIT/thread introspection
+  description: >
+    Generic JVM application profiling using JFR for GC/JIT/thread introspection.
+    NOTE: This scenario requires a running JVM process. Use --jvm-pid to specify
+    the target PID, or ensure java is running in the background. The workload
+    command is intentionally empty — profiling targets an existing JVM process.
 
 dependencies: []
 
@@ -12,6 +16,10 @@ platform:
   recommended_cores: 64
 
 workload:
+  # No workload command — this scenario profiles an already-running JVM process.
+  # Pass --jvm-pid <pid> to specify the target JVM process.
+  # Example: java -jar myapp.jar &  # start app in background
+  #          arkprobe collect -b jvm --jvm-pid $(pgrep -f myapp.jar)
   command: ""
   target_process: "java"
   throughput_metric: "ops/sec"

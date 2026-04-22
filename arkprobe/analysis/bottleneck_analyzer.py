@@ -62,7 +62,7 @@ class BottleneckAnalyzer:
     # JVM bottleneck thresholds
     JVM_GC_PAUSE_RATIO_HIGH = 0.10      # GC pause > 10% of total time
     JVM_GC_PAUSE_RATIO_MEDIUM = 0.05    # GC pause > 5% is potential bottleneck
-    JVM_SAFEPPOINT_RATIO_HIGH = 0.05    # Safepoint > 5% is significant
+    JVM_SAFEPOINT_RATIO_HIGH = 0.05    # Safepoint > 5% is significant
     JVM_HEAP_USAGE_HIGH = 0.85          # Heap usage > 85% is pressure
     JVM_DEOPT_RATIO_HIGH = 0.10         # Deopt ratio > 10% is abnormal
 
@@ -98,7 +98,7 @@ class BottleneckAnalyzer:
                     # Map JVM detail category to BottleneckCategory
                     jvm_cat_map = {
                         "JVM: GC Pause": BottleneckCategory.JVM_GC_PAUSE,
-                        "JVM: Safepoint": BottleneckCategory.JVM_SAFEPPOINT,
+                        "JVM: Safepoint": BottleneckCategory.JVM_SAFEPOINT,
                         "JVM: JIT Deoptimization": BottleneckCategory.JVM_JIT_DEOPT,
                         "JVM: Heap Pressure": BottleneckCategory.JVM_HEAP_PRESSURE,
                     }
@@ -570,7 +570,7 @@ class BottleneckAnalyzer:
             ))
 
         # Safepoint bottleneck
-        if threads.safepoint_ratio >= self.JVM_SAFEPPOINT_RATIO_HIGH:
+        if threads.safepoint_ratio >= self.JVM_SAFEPOINT_RATIO_HIGH:
             details.append(BottleneckDetail(
                 category="JVM: Safepoint",
                 score=threads.safepoint_ratio,

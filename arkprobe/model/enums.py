@@ -30,7 +30,7 @@ class BottleneckCategory(str, Enum):
     BAD_SPECULATION = "bad_speculation"
     WELL_BALANCED = "well_balanced"
     JVM_GC_PAUSE = "jvm_gc_pause"
-    JVM_SAFEPPOINT = "jvm_safepoint"
+    JVM_SAFEPOINT = "jvm_safepoint"
     JVM_JIT_DEOPT = "jvm_jit_deopt"
     JVM_HEAP_PRESSURE = "jvm_heap_pressure"
 

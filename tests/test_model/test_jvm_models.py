@@ -174,7 +174,7 @@ class TestJVMEnums:
 
     def test_bottleneck_categories(self):
         assert BottleneckCategory.JVM_GC_PAUSE.value == "jvm_gc_pause"
-        assert BottleneckCategory.JVM_SAFEPPOINT.value == "jvm_safepoint"
+        assert BottleneckCategory.JVM_SAFEPOINT.value == "jvm_safepoint"
         assert BottleneckCategory.JVM_JIT_DEOPT.value == "jvm_jit_deopt"
         assert BottleneckCategory.JVM_HEAP_PRESSURE.value == "jvm_heap_pressure"
 

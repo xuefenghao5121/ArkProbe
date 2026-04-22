@@ -251,7 +251,7 @@ class CollectorOrchestrator:
                     result.raw_files.update(col_result.raw_files)
                     result.errors.extend(col_result.errors)
                 elif label == "uncore" and col_result is not None:
-                    result.perf_data["uncore"] = col_result
+                    result.perf_data["uncore"] = col_result.data if hasattr(col_result, 'data') else col_result
                 elif label == "jfr" and col_result is not None:
                     result.jvm_data = col_result
 

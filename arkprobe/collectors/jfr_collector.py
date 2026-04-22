@@ -40,6 +40,7 @@ JFR_EVENT_PROFILES: Dict[str, List[str]] = {
         "jdk.JavaMonitorInflate",
         "jdk.SafepointBegin",
         "jdk.SafepointEnd",
+        "jdk.ThreadStatistics",
     ],
     "memory": [
         "jdk.GCHeapSummary",
@@ -128,7 +129,11 @@ class JfrCollector(BaseCollector):
     ) -> CollectionResult:
         """JDK 11+ path: start JFR recording, wait, parse JSON output."""
         errors: list[str] = []
-        data: Dict[str, Any] = {"jdk_version": jdk_version, "jfr_available": True}
+        data: Dict[str, Any] = {
+            "jdk_version": jdk_version,
+            "jfr_available": True,
+            "jfr_duration_sec": duration_sec,
+        }
         raw_files: Dict[str, Path] = {}
 
         jfr_file = self.output_dir / f"arkprobe-{pid}.jfr"
@@ -198,7 +203,11 @@ class JfrCollector(BaseCollector):
     ) -> CollectionResult:
         """JDK 8 fallback: jstat -gc sampling + jstack thread snapshot."""
         errors: list[str] = []
-        data: Dict[str, Any] = {"jdk_version": jdk_version, "jfr_available": False}
+        data: Dict[str, Any] = {
+            "jdk_version": jdk_version,
+            "jfr_available": False,
+            "jfr_duration_sec": duration_sec,
+        }
         raw_files: Dict[str, Path] = {}
 
         # jstat -gc sampling at 1s intervals

@@ -74,6 +74,7 @@ def list_scenarios_cmd(do_check, builtin_only):
             "oltp": "Database OLTP",
             "kv": "KV Store",
             "web": "Web Server",
+            "jvm": "JVM General",
         }
         for short, full in builtin_map.items():
             table.add_row(short, full)
@@ -278,7 +279,7 @@ def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scala
             skip_jfr=not (jfr or sc.collection.jfr_enabled),
             jfr_duration_sec=sc.collection.jfr_duration_sec,
             jfr_events=list(jfr_events) if jfr_events else sc.collection.jfr_events,
-            jvm_pid=jvm_pid or sc.workload.target_process_pid if hasattr(sc.workload, 'target_process_pid') else jvm_pid,
+            jvm_pid=jvm_pid,
         )
 
         orchestrator = CollectorOrchestrator(config, data_dir)
@@ -567,7 +568,7 @@ def optimize(ctx, feature_vectors):
             f"([{score_style}]{report.optimization_score:.0f}/100[/{score_style}])"
         )
 
-        for layer_name in ("os", "bios", "driver"):
+        for layer_name in ("os", "bios", "driver", "jvm"):
             layer = report.layers.get(layer_name)
             if not layer or layer.gaps_found == 0:
                 continue

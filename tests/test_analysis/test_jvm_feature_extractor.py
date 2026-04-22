@@ -42,6 +42,9 @@ def _make_jfr_collection_result(**overrides) -> CollectionResult:
                     {"type": "jdk.SafepointBegin", "values": {"duration": 5000000}},
                 ],
                 "thread_events": [
+                    {"type": "jdk.ThreadStatistics", "values": {
+                        "activeCount": 128, "daemonCount": 42, "runningCount": 10
+                    }},
                     {"type": "jdk.ThreadStart", "values": {"daemon": True}},
                     {"type": "jdk.ThreadStart", "values": {"daemon": False}},
                 ],
@@ -124,8 +127,9 @@ class TestExtractJvmFromJfr:
         jvm = extractor._extract_jvm(result)
 
         assert isinstance(jvm.threads, JVMThreadMetrics)
-        assert jvm.threads.total_threads == 2
-        assert jvm.threads.daemon_threads == 1
+        assert jvm.threads.total_threads == 128  # from ThreadStatistics
+        assert jvm.threads.active_threads == 10  # runningCount from ThreadStatistics
+        assert jvm.threads.daemon_threads == 42  # daemonCount from ThreadStatistics
 
 
 class TestExtractJvmFromJstat:

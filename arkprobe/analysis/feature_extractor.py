@@ -572,13 +572,33 @@ class FeatureExtractor:
 
         total_threads = 0
         daemon_threads = 0
+        active_threads = 0
+        has_thread_stats = False
         for event in thread_events:
             event_type = event.get("type", "")
-            if "ThreadStart" in event_type:
-                total_threads += 1
+            if "ThreadStatistics" in event_type:
                 props = event.get("values", event)
-                if props.get("daemon", False):
-                    daemon_threads += 1
+                total_threads = props.get("activeCount", total_threads)
+                daemon_threads = props.get("daemonCount", daemon_threads)
+                active_threads = props.get("runningCount", 0)
+                has_thread_stats = True
+
+        # Fallback: count ThreadStart events if ThreadStatistics not available
+        if not has_thread_stats:
+            for event in thread_events:
+                event_type = event.get("type", "")
+                if "ThreadStart" in event_type:
+                    total_threads += 1
+                    props = event.get("values", event)
+                    if props.get("daemon", False):
+                        daemon_threads += 1
+
+        # Fallback: count ThreadStart events if ThreadStatistics not available
+        if total_threads == 0:
+            for event in thread_events:
+                event_type = event.get("type", "")
+                if "ThreadStart" in event_type:
+                    total_threads += 1
 
         safepoint_count = len(safepoint_events) // 2  # begin+end pairs
         safepoint_total_ms = 0.0
@@ -593,6 +613,7 @@ class FeatureExtractor:
 
         return JVMThreadMetrics(
             total_threads=total_threads,
+            active_threads=active_threads,
             daemon_threads=daemon_threads,
             safepoint_count=safepoint_count,
             safepoint_total_ms=round(safepoint_total_ms, 1),
