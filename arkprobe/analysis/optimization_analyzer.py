@@ -42,6 +42,9 @@ class TuningRule:
     base_impact: Dict[str, float]
     # Feature conditions that boost impact: [{metric, op, threshold, boost}]
     impact_conditions: List[Dict[str, Any]] = field(default_factory=list)
+    # Prerequisites: rule is suppressed unless ALL conditions are met
+    # e.g. [{"metric": "io.iops_write", "op": ">", "threshold": 0}]
+    prerequisites: List[Dict[str, Any]] = field(default_factory=list)
     # Command templates
     apply_template: str = ""
     verify_template: str = ""
@@ -154,6 +157,9 @@ TUNING_RULES: List[TuningRule] = [
             {"metric": "memory.tlb_mpki", "op": ">", "threshold": 1.0, "boost": 0.2},
             {"metric": "cache.l3_mpki", "op": ">", "threshold": 5.0, "boost": 0.1},
         ],
+        prerequisites=[
+            {"metric": "memory.tlb_mpki", "op": ">", "threshold": 0.5},
+        ],
         apply_template="sysctl -w vm.nr_hugepages={value}",
         verify_template="cat /proc/meminfo | grep HugePages",
         rollback_template="sysctl -w vm.nr_hugepages={current}",
@@ -189,6 +195,9 @@ TUNING_RULES: List[TuningRule] = [
         },
         impact_conditions=[
             {"metric": "memory.tlb_mpki", "op": ">", "threshold": 0.5, "boost": 0.15},
+        ],
+        prerequisites=[
+            {"metric": "memory.tlb_mpki", "op": ">", "threshold": 0.3},
         ],
         apply_template="echo {value} > /sys/kernel/mm/transparent_hugepage/enabled",
         verify_template="cat /sys/kernel/mm/transparent_hugepage/enabled",
@@ -226,6 +235,9 @@ TUNING_RULES: List[TuningRule] = [
         impact_conditions=[
             {"metric": "memory.bandwidth_utilization", "op": ">", "threshold": 0.5, "boost": 0.15},
         ],
+        prerequisites=[
+            {"metric": "memory.bandwidth_utilization", "op": ">", "threshold": 0.1},
+        ],
         apply_template="sysctl -w vm.swappiness={value}",
         verify_template="sysctl vm.swappiness",
         rollback_template="sysctl -w vm.swappiness={current}",
@@ -255,6 +267,9 @@ TUNING_RULES: List[TuningRule] = [
         impact_conditions=[
             {"metric": "io.iops_write", "op": ">", "threshold": 1000, "boost": 0.15},
         ],
+        prerequisites=[
+            {"metric": "io.iops_write", "op": ">", "threshold": 0},
+        ],
         apply_template="sysctl -w vm.dirty_ratio={value}",
         verify_template="sysctl vm.dirty_ratio",
         rollback_template="sysctl -w vm.dirty_ratio={current}",
@@ -281,6 +296,9 @@ TUNING_RULES: List[TuningRule] = [
             "compute_bound": 0.0, "memory_bound": 0.1, "mixed": 0.0,
             "_default": 0.1,
         },
+        prerequisites=[
+            {"metric": "io.iops_write", "op": ">", "threshold": 0},
+        ],
         apply_template="sysctl -w vm.dirty_background_ratio={value}",
         verify_template="sysctl vm.dirty_background_ratio",
         rollback_template="sysctl -w vm.dirty_background_ratio={current}",
@@ -370,6 +388,9 @@ TUNING_RULES: List[TuningRule] = [
         impact_conditions=[
             {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 100000, "boost": 0.2},
         ],
+        prerequisites=[
+            {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 0},
+        ],
         apply_template="sysctl -w net.core.netdev_max_backlog={value}",
         verify_template="sysctl net.core.netdev_max_backlog",
         rollback_template="sysctl -w net.core.netdev_max_backlog={current}",
@@ -399,6 +420,9 @@ TUNING_RULES: List[TuningRule] = [
         impact_conditions=[
             {"metric": "network.connection_rate", "op": ">", "threshold": 1000, "boost": 0.2},
         ],
+        prerequisites=[
+            {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 0},
+        ],
         apply_template="sysctl -w net.core.somaxconn={value}",
         verify_template="sysctl net.core.somaxconn",
         rollback_template="sysctl -w net.core.somaxconn={current}",
@@ -424,6 +448,9 @@ TUNING_RULES: List[TuningRule] = [
             "compute_bound": 0.0, "memory_bound": 0.0, "mixed": 0.0,
             "_default": 0.1,
         },
+        prerequisites=[
+            {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 0},
+        ],
         apply_template="sysctl -w net.ipv4.tcp_max_syn_backlog={value}",
         verify_template="sysctl net.ipv4.tcp_max_syn_backlog",
         rollback_template="sysctl -w net.ipv4.tcp_max_syn_backlog={current}",
@@ -453,6 +480,9 @@ TUNING_RULES: List[TuningRule] = [
         impact_conditions=[
             {"metric": "io.iops_read", "op": ">", "threshold": 5000, "boost": 0.15},
         ],
+        prerequisites=[
+            {"metric": "io.iops_read", "op": ">", "threshold": 0},
+        ],
         apply_template="echo {value} > /sys/block/sda/queue/scheduler",
         verify_template="cat /sys/block/sda/queue/scheduler",
         rollback_template="echo {current} > /sys/block/sda/queue/scheduler",
@@ -480,6 +510,9 @@ TUNING_RULES: List[TuningRule] = [
         },
         impact_conditions=[
             {"metric": "concurrency.context_switches_per_sec", "op": ">", "threshold": 50000, "boost": 0.2},
+        ],
+        prerequisites=[
+            {"metric": "concurrency.context_switches_per_sec", "op": ">", "threshold": 1000},
         ],
         apply_template="sysctl -w kernel.sched_min_granularity_ns={value}",
         verify_template="sysctl kernel.sched_min_granularity_ns",
@@ -626,6 +659,9 @@ TUNING_RULES: List[TuningRule] = [
             {"metric": "network.bandwidth_rx_mbps", "op": ">", "threshold": 1000, "boost": 0.2},
             {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 50000, "boost": 0.15},
         ],
+        prerequisites=[
+            {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 0},
+        ],
         apply_template="ethtool -K eth0 tso on gro on",
         verify_template="ethtool -k eth0 | grep -E 'tcp-segmentation|generic-receive'",
         rollback_template="ethtool -K eth0 tso off gro off",
@@ -653,6 +689,9 @@ TUNING_RULES: List[TuningRule] = [
         },
         impact_conditions=[
             {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 100000, "boost": 0.2},
+        ],
+        prerequisites=[
+            {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 0},
         ],
         apply_template="ethtool -G eth0 rx {value} tx {value}",
         verify_template="ethtool -g eth0",
@@ -708,6 +747,9 @@ TUNING_RULES: List[TuningRule] = [
         impact_conditions=[
             {"metric": "io.iops_write", "op": ">", "threshold": 1000, "boost": 0.1},
         ],
+        prerequisites=[
+            {"metric": "io.iops_write", "op": ">", "threshold": 0},
+        ],
         apply_template="mount -o remount,noatime /data",
         verify_template="mount | grep /data",
         rollback_template="mount -o remount,relatime /data",
@@ -735,6 +777,9 @@ TUNING_RULES: List[TuningRule] = [
         },
         impact_conditions=[
             {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 200000, "boost": 0.25},
+        ],
+        prerequisites=[
+            {"metric": "network.packets_per_sec_rx", "op": ">", "threshold": 0},
         ],
         apply_template="echo ffff > /sys/class/net/eth0/queues/rx-0/rps_cpus",
         verify_template="cat /sys/class/net/eth0/queues/rx-0/rps_cpus",
@@ -883,6 +928,11 @@ class OptimizationAnalyzer:
         # Skip rules explicitly set to 0 impact for this scenario type
         if base <= 0.0 and scenario_type in rule.base_impact:
             return None
+
+        # Skip rules whose prerequisites are not met
+        if not self._check_prerequisites(rule, fv):
+            return None
+
         boost = 0.0
         reasoning_parts = []
         for cond in rule.impact_conditions:
@@ -990,6 +1040,32 @@ class OptimizationAnalyzer:
             return float(obj) if obj is not None else None
         except (TypeError, ValueError):
             return None
+
+    def _check_prerequisites(
+        self, rule: TuningRule, fv: WorkloadFeatureVector
+    ) -> bool:
+        """Check if all prerequisites for a rule are met.
+
+        A rule with no prerequisites always passes.
+        A rule with prerequisites is suppressed unless every condition is met.
+        """
+        if not rule.prerequisites:
+            return True
+        for cond in rule.prerequisites:
+            metric_val = self._resolve_metric(fv, cond["metric"])
+            if metric_val is None:
+                return False
+            op = cond["op"]
+            threshold = cond["threshold"]
+            if op == ">" and not (metric_val > threshold):
+                return False
+            elif op == "<" and not (metric_val < threshold):
+                return False
+            elif op == ">=" and not (metric_val >= threshold):
+                return False
+            elif op == "<=" and not (metric_val <= threshold):
+                return False
+        return True
 
     @staticmethod
     def _values_match(
