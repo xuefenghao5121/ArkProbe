@@ -13,3 +13,8 @@ build/
 sample_report.html
 .venv/
 venv/
+# JVM test workspace
+arkprobe/benchmarks/jvm_load_test_workspace/
+# GC logs from JVM tests
+gc.log
+*.class
