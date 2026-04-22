@@ -196,7 +196,10 @@ def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scala
             builtin_scenarios.append(sc)
 
         # Resolve --scenario names
-        if "builtin" in scenario or "all" in scenario or not scenario:
+        # Only load all scenarios as default when neither --scenario nor --builtin is given
+        if "builtin" in scenario or "all" in scenario:
+            scenarios.extend(load_all_scenarios())
+        elif not scenario and not builtin:
             scenarios.extend(load_all_scenarios())
         else:
             for name in scenario:
@@ -262,7 +265,7 @@ def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scala
             ebpf_duration_sec=min(duration, sc.collection.ebpf_duration_sec),
             warmup_sec=sc.collection.warmup_sec,
             ebpf_probes=sc.collection.ebpf_probes,
-            skip_ebpf=skip_ebpf,
+            skip_ebpf=skip_ebpf or not sc.collection.ebpf_probes,
             skip_scalability=skip_scalability,
             cache_ttl_sec=cache_ttl,
             force=force,
