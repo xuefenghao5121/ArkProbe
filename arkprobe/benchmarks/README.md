@@ -243,3 +243,83 @@ cd /path/to/arkprobe/arkprobe/benchmarks
 - All methods use `GetPrimitiveArrayCritical` for zero-copy array access
 - SOR C++ uses scalar loop matching Java stride-2 access pattern (SIMD would be incorrect for red-black)
 - Benchmark includes 5-iteration warmup before measurement
+
+---
+
+## Application Workload Benchmark
+
+`app_workload_benchmark.sh` — Real Java application workloads: ML feature engineering pipeline + Flink-style stream processing kernels.
+
+### Quick Start
+
+```bash
+cd /path/to/arkprobe/arkprobe/benchmarks
+
+# Full pipeline
+./app_workload_benchmark.sh
+
+# Java baseline only
+./app_workload_benchmark.sh --java-only
+```
+
+### Prerequisites
+
+- JDK 21+ (`openjdk-21-jdk` or equivalent)
+- `g++` with C++17 support
+- `python3` (for `compare_results.py`)
+- 4GB+ available memory (`-Xmx4g`)
+
+### Scenario 1: ML Feature Engineering (mirrors Spark MLlib)
+
+| Method | Equivalent | Data Size | C++ Optimization |
+|--------|-----------|-----------|-----------------|
+| `zscoreNormalize` | StandardScaler | 1M rows × 64 features | SIMD broadcast-subtract-divide per row |
+| `minMaxScale` | MinMaxScaler | 1M rows × 64 features | SIMD broadcast-subtract-divide with div-by-zero guard |
+| `tfidfMultiply` | HashingTF + IDF | 100K docs, 50K vocab | Gather-multiply for sparse TF × dense IDF |
+| `featureHash` | FeatureHasher | 1M features, 2^16 buckets | C++ MurmurHash3 on contiguous byte[] |
+| `bucketize` | Bucketizer | 1M values, 100 splits | Same binary search (branch-heavy, not SIMD-friendly) |
+
+### Scenario 2: Flink-Style Stream Processing
+
+| Method | Equivalent Flink API | Data Size | C++ Optimization |
+|--------|---------------------|-----------|-----------------|
+| `windowedAggregate` | keyBy().window(Tumbling).aggregate(Sum) | 10M events, 10K keys | Direct index accumulate (no HashMap) |
+| `windowedTopN` | keyBy().window().sort().limit(N) | 10M events, 10K keys, top-10 | nth_element + partial sort |
+| `sessionWindowMerge` | keyBy().window(EventTimeSessionGap) | 10M events, 10K keys | C++ sort + merge (no HashMap/ArrayList) |
+
+### x86 Measured Results (3 runs)
+
+| Method | Java (ms) | C++ (ms) | Speedup | Notes |
+|--------|-----------|----------|---------|-------|
+| `windowedTopN` | 23,500 | 920 | **25x** | Java HashMap + sort per key vs C++ nth_element |
+| `sessionWindowMerge` | 2,000 | 790 | **2.5x** | Java HashMap/ArrayList vs C++ sort + merge |
+| `minMaxScale` | 1,000 | 540 | **1.8x** | SIMD broadcast-subtract-divide |
+| `zscoreNormalize` | 940 | 620 | **1.5x** | SIMD broadcast-subtract-divide (div more costly) |
+| `featureHash` | 440 | 340 | **1.3x** | C++ MurmurHash3 on contiguous byte[] |
+| `tfidfMultiply` | 215 | 160 | **1.3x** | Gather-multiply for sparse vectors |
+| `windowedAggregate` | 760 | 640 | **1.2x** | Direct index vs HashMap, but computation is simple |
+| `bucketize` | 1,700 | 1,740 | **1.0x** | Binary search is branch-heavy, C++ no advantage |
+
+### Key Findings
+
+1. **Data structure replacement is the biggest win**: `windowedTopN` 25x — replacing Java HashMap + ArrayList + sort with C++ nth_element + direct arrays eliminates GC pressure and container overhead
+2. **SIMD normalization effective**: `minMaxScale` 1.8x, `zscoreNormalize` 1.5x — broadcast-subtract-divide pattern matches SIMD well
+3. **TF-IDF and FeatureHash moderate gains** (1.3x): gather-scatter and hash computation have inherent irregularity
+4. **Bucketize shows no gain** (1.0x): binary search is branch-heavy and data-dependent, C++ compiler can't improve over JIT
+5. **Flink-style hotspots are often containers, not compute**: the 25x topN win comes from eliminating Java container overhead, not SIMD
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `java/AppWorkloadBench.java` | Self-contained Java benchmark with ML + Flink workloads |
+| `java/arkprobe_appworkload.cpp` | C++ JNI implementation (ARM NEON / x86 AVX2 / scalar) |
+| `app_workload_benchmark.sh` | Orchestration script |
+
+### Notes
+
+- Library named `libarkprobe_appworkload.so`
+- FeatureHash uses contiguous `byte[]` + `offsets[]` + `lengths[]` (not `String[]` or `byte[][]`) to avoid JNI string/array-of-array overhead
+- ML workloads operate on row-major `double[]` with column parameters (means/stds/mins/maxes) — matches Spark's `Vector` representation
+- Flink-style workloads use pre-sorted event streams (simulating Kafka source with event-time ordering)
+- `-Xmx4g` recommended due to 10M event stream data

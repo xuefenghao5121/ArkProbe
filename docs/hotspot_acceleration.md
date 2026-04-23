@@ -518,6 +518,107 @@ cd arkprobe/benchmarks
 
 ---
 
+## 真实应用 Workload 性能验证
+
+### 概述
+
+在微基准测试和真实算法测试之外，使用 **8 个真实 Java 应用场景**验证 C++ 加速效果。这些场景直接对应 Spark MLlib 特征工程和 Flink 流处理的核心计算路径，而非人为构造的数值算法。
+
+### 工具集
+
+| 文件 | 说明 |
+|------|------|
+| `arkprobe/benchmarks/java/AppWorkloadBench.java` | 自包含 Java benchmark，8 个真实应用方法，自动检测 native 库 |
+| `arkprobe/benchmarks/java/arkprobe_appworkload.cpp` | C++ JNI 实现，ARM NEON / x86 AVX2 / scalar 三路分支 |
+| `arkprobe/benchmarks/app_workload_benchmark.sh` | 一键全流程：编译 → 基线 → 加速 → 对比 |
+
+### 快速运行
+
+```bash
+cd arkprobe/benchmarks
+
+# 一键全流程
+./app_workload_benchmark.sh
+
+# 仅 Java 基线
+./app_workload_benchmark.sh --java-only
+```
+
+### 场景 1：ML 特征工程（对应 Spark MLlib）
+
+| 方法 | 对应 Spark 组件 | 数据规模 | C++ 优化技术 |
+|------|----------------|---------|-------------|
+| `zscoreNormalize` | StandardScaler | 1M 行 × 64 特征 | SIMD broadcast-subtract-divide 逐行 |
+| `minMaxScale` | MinMaxScaler | 1M 行 × 64 特征 | SIMD broadcast-subtract-divide + 除零保护 |
+| `tfidfMultiply` | HashingTF + IDF | 100K 文档, 50K 词汇 | Gather-multiply 稀疏 TF × 密集 IDF |
+| `featureHash` | FeatureHasher | 1M 特征, 2^16 桶 | C++ MurmurHash3 连续 byte[] |
+| `bucketize` | Bucketizer | 1M 值, 100 分割点 | 标准二分搜索（分支密集，非 SIMD 友好） |
+
+### 场景 2：Flink 风格流处理
+
+| 方法 | 对应 Flink API | 数据规模 | C++ 优化技术 |
+|------|---------------|---------|-------------|
+| `windowedAggregate` | keyBy().window(Tumbling).aggregate(Sum) | 10M 事件, 10K 键 | 直接索引累加（无 HashMap） |
+| `windowedTopN` | keyBy().window().sort().limit(N) | 10M 事件, 10K 键, top-10 | nth_element + 部分排序 |
+| `sessionWindowMerge` | keyBy().window(EventTimeSessionGap) | 10M 事件, 10K 键 | C++ sort + 区间合并（无 HashMap/ArrayList） |
+
+### x86 实测结果（3 次平均）
+
+| 方法 | Java (ms) | C++ (ms) | 加速比 | 分析 |
+|------|-----------|----------|--------|------|
+| `windowedTopN` | 23,500 | 920 | **25x** | Java HashMap + ArrayList + sort 替换为 C++ nth_element + 直接数组，消除 GC 和容器开销 |
+| `sessionWindowMerge` | 2,000 | 790 | **2.5x** | Java HashMap/ArrayList 替换为 C++ sort + merge |
+| `minMaxScale` | 1,000 | 540 | **1.8x** | SIMD broadcast-subtract-divide 有效 |
+| `zscoreNormalize` | 940 | 620 | **1.5x** | SIMD broadcast-subtract-divide，除法比减法更耗时 |
+| `featureHash` | 440 | 340 | **1.3x** | C++ MurmurHash3 连续 byte[]，但哈希本身不规则 |
+| `tfidfMultiply` | 215 | 160 | **1.3x** | Gather-multiply 稀疏向量，不规则访存限制收益 |
+| `windowedAggregate` | 760 | 640 | **1.2x** | 直接索引替代 HashMap，但计算本身简单 |
+| `bucketize` | 1,700 | 1,740 | **1.0x** | 二分搜索分支密集、数据依赖，C++ 无优势 |
+
+### 与微基准/真实算法对比
+
+| 类别 | 微基准 (HotspotBench) | 真实算法 (RealWorkload) | 真实应用 (AppWorkload) | 说明 |
+|------|----------------------|----------------------|---------------------|------|
+| 数值向量 | 1.1-5.6x | — | 1.5-1.8x | 标准化是典型 SIMD broadcast 场景 |
+| 数据结构替换 | — | — | **2.5-25x** | HashMap→数组是最大收益来源 |
+| 行消去/矩阵 | 1.1x (64×64) | 2.0x (512×512 LU) | — | 大矩阵 JNI 边界成本占比低 |
+| 距离计算 | — | 1.3x (KMeans) | — | n×k×dim 三层循环 |
+| 稀疏计算 | — | 1.3x (Sparse) | 1.3x (TF-IDF) | gather-scatter 限制 |
+| 哈希计算 | — | — | 1.3x (FeatureHash) | MurmurHash3 连续内存处理 |
+| 分支密集型 | — | — | 1.0x (Bucketize) | 二分搜索 C++ 无优势 |
+| 内存带宽 | ~1.0x | — | — | 纯访存瓶颈 |
+| 字符串 | 0.16-0.4x | — | — | JNI 字符串转换开销 |
+
+### 关键发现
+
+1. **数据结构替换是最大收益来源**：`windowedTopN` 25x — Java HashMap + ArrayList + sort 替换为 C++ nth_element + 直接数组，消除了 GC 压力和容器开销
+2. **SIMD 标准化有效**：`minMaxScale` 1.8x、`zscoreNormalize` 1.5x — broadcast-subtract-divide 模式完美匹配 SIMD
+3. **TF-IDF 和 FeatureHash 中等收益**（1.3x）：gather-scatter 和哈希计算有固有不规则性
+4. **Bucketize 无收益**（1.0x）：二分搜索分支密集且数据依赖，C++ 编译器无法超越 JIT
+5. **Flink 热点通常是容器而非计算**：25x topN 收益来自消除 Java 容器开销，而非 SIMD
+
+### 推荐加速策略（最终版）
+
+| 场景 | 推荐策略 | 预期加速 | 来源 |
+|------|---------|---------|------|
+| Java 容器替换（HashMap/sort → 数组/nth_element） | C++ 直接数组 + 部分排序 | **2.5-25x** | AppWorkload |
+| 数值向量 map/reduce/filter | C++ SIMD + CriticalArray | 1.5-5.6x | HotspotBench |
+| ML 标准化（StandardScaler/MinMaxScaler） | C++ SIMD broadcast-sub | 1.5-1.8x | AppWorkload |
+| 大矩阵行消去 (≥256×256) | C++ SIMD 行操作 | 2.0x | RealWorkload |
+| 数学函数（sigmoid/relu） | C++ libm + SIMD | 1.2-1.4x | HotspotBench |
+| KMeans 距离计算 | C++ SIMD 距离 | 1.3x | RealWorkload |
+| 稀疏矩阵/TF-IDF | C++ SIMD 逐行/gather | 1.3x | RealWorkload/AppWorkload |
+| 特征哈希（FeatureHasher） | C++ MurmurHash3 连续内存 | 1.3x | AppWorkload |
+| 大矩阵乘法 (≥256×256) | C++ cache-blocked GEMM | 2-4x | HotspotBench |
+| 流式聚合（简单求和） | C++ 直接索引 | 1.2x | AppWorkload |
+| 模板迭代（SOR） | C++ 编译优化（非 SIMD） | 1.2x | RealWorkload |
+| FFT 蝶形运算 | 不推荐 C++ 化 | ~1.0x | RealWorkload |
+| 二分搜索/Bucketize | 不推荐 C++ 化 | ~1.0x | AppWorkload |
+| 内存带宽密集型 | 不推荐 C++ 化 | ~1.0x | HotspotBench |
+| 字符串处理 | 不推荐 JNI C++ 化 | <1.0x | HotspotBench |
+
+---
+
 ## 下一步
 
 - 支持 ARM SVE（可伸缩向量扩展）而非仅 NEON
