@@ -16,11 +16,6 @@
 #include <cstring>
 #include <string>
 #include <vector>
-{%- if target_arch and ("x86" in target_arch or "haswell" in target_arch or "skylake" in target_arch) %}
-#include <x86intrin.h>
-{%- else %}
-#include <arm_neon.h>
-{%- endif %}
 
 {%- if pattern_subtype == "string_split" %}
 /**

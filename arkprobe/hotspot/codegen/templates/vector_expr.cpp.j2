@@ -9,11 +9,12 @@
  */
 
 #include <jni.h>
-{%- if target_arch == "native" or "x86" in target_arch or "haswell" in target_arch or "skylake" in target_arch %}
-#include <x86intrin.h>
-{%- else %}
+
+#ifdef __aarch64__
 #include <arm_neon.h>
-{%- endif %}
+#elif defined(__x86_64__)
+#include <x86intrin.h>
+#endif
 
 {%- if pattern_subtype == "vector_map" %}
 /**
@@ -21,8 +22,9 @@
  * Pattern: element-wise transformation (a[i] = f(b[i]))
  *
  * Optimization:
- * - NEON 128-bit = 4x float32 SIMD
- * - Horizontal add for reductions
+ * - NEON 128-bit = 4x float32 SIMD (ARM)
+ * - AVX2 256-bit = 8x float32 SIMD (x86)
+ * - Scalar fallback
  */
 extern "C"
 JNIEXPORT jdouble JNICALL
@@ -31,10 +33,19 @@ Java_{{ mangled_class_name }}_{{ method_name }}(
     jobject thiz,
     jdouble a
 ) {
-    // Vectorized: process 4 elements at a time
+#ifdef __aarch64__
     float32x4_t va = vdupq_n_f32(static_cast<float>(a));
-    float32x4_t result = vmulq_f32(va, va);  // Example: square
+    float32x4_t result = vmulq_f32(va, va);
     return static_cast<jdouble>(vgetq_lane_f32(result, 0));
+#elif defined(__x86_64__)
+    __m256 va = _mm256_set1_ps(static_cast<float>(a));
+    __m256 result = _mm256_mul_ps(va, va);
+    float tmp[8];
+    _mm256_storeu_ps(tmp, result);
+    return static_cast<jdouble>(tmp[0]);
+#else
+    return a * a;
+#endif
 }
 
 {%- elif pattern_subtype == "vector_reduce" %}
@@ -158,11 +169,14 @@ Java_{{ mangled_class_name }}_{{ method_name }}(
     const int avx_count = count & ~7;
     for (int i = 0; i < avx_count; i += 8) {
         __m256 vec = _mm256_loadu_ps(&input[i]);
-        __m256 mask = _mm256_cmp_ps(vec, thresh, _CMP_GE_OQ);
+        __m256 cmp = _mm256_cmp_ps(vec, thresh, _CMP_GE_OQ);
+        float vec_arr[8], cmp_arr[8];
+        _mm256_storeu_ps(vec_arr, vec);
+        _mm256_storeu_ps(cmp_arr, cmp);
         for (int j = 0; j < 8; j++) {
-            float val = _mm256_extractf32x4_ps(vec, j / 4)[j % 4];
-            bool match = _mm256_extractf32x4_ps(mask, j / 4)[j % 4];
-            if (match) output[out_idx++] = val;
+            if (cmp_arr[j] != 0.0f) {
+                output[out_idx++] = vec_arr[j];
+            }
         }
     }
 
@@ -197,9 +211,20 @@ Java_{{ mangled_class_name }}_{{ method_name }}(
     jdouble a,
     jdouble b
 ) {
+#ifdef __aarch64__
     float32x4_t va = vdupq_n_f32(static_cast<float>(a));
     float32x4_t vb = vdupq_n_f32(static_cast<float>(b));
     float32x4_t result = vmulq_f32(va, vb);
     return static_cast<jdouble>(vgetq_lane_f32(result, 0));
+#elif defined(__x86_64__)
+    __m256 va = _mm256_set1_ps(static_cast<float>(a));
+    __m256 vb = _mm256_set1_ps(static_cast<float>(b));
+    __m256 result = _mm256_mul_ps(va, vb);
+    float tmp[8];
+    _mm256_storeu_ps(tmp, result);
+    return static_cast<jdouble>(tmp[0]);
+#else
+    return a * b;
+#endif
 }
 {%- endif %}

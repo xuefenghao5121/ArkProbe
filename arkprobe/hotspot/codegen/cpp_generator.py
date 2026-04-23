@@ -39,8 +39,7 @@ class GenerationConfig:
     output_dir: Path
     library_name: str = "arkprobe_hotspot"
     optimization_level: str = "O3"
-    target_arch: str = "armv8-a+simd"
-    use_neon: bool = True
+    target_arch: Optional[str] = None
 
 
 class CppGenerator:

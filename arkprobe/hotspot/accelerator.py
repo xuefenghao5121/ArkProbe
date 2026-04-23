@@ -74,13 +74,23 @@ class HotspotAccelerator:
         self.profiler = JfrHotspotProfiler(output_dir=self.config.output_dir / "profiler")
         self.bytecode_extractor = BytecodeExtractor(output_dir=self.config.output_dir / "bytecode")
         self.pattern_matcher = PatternMatcher()
+        # Resolve target_arch: None means auto-detect
+        resolved_arch = self.config.target_arch
+        if resolved_arch is None:
+            from .compiler.compiler import detect_host_arch
+            resolved_arch = detect_host_arch()
+            log.info("Auto-detected target architecture: %s", resolved_arch)
+
         self.codegen = CppGenerator(GenerationConfig(
             output_dir=self.config.output_dir / "codegen",
             library_name=self.config.library_name,
             optimization_level=self.config.optimization_level,
-            target_arch=self.config.target_arch,
+            target_arch=resolved_arch,
         ))
-        self.compiler = Compiler(build_dir=self.config.output_dir / "build")
+        self.compiler = Compiler(
+            build_dir=self.config.output_dir / "build",
+            target_arch=resolved_arch,
+        )
 
     def run(
         self,

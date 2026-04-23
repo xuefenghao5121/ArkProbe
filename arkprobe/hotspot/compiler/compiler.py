@@ -229,19 +229,25 @@ class Compiler:
         if java_home and Path(java_home).exists():
             cmd.extend([
                 f"-I{java_home}/include",
-                f"-I{java_home}/include/linux",
             ])
+            # Platform-specific JNI include subdirectory
+            jni_subdir = self._jni_include_subdir()
+            if (Path(java_home) / "include" / jni_subdir).exists():
+                cmd.append(f"-I{java_home}/include/{jni_subdir}")
         else:
             # Try common locations
+            machine = platform.machine().lower()
+            arch_suffix = "amd64" if machine in ("x86_64", "amd64") else "arm64"
             for common_java_home in [
                 "/usr/lib/jvm/default-java",
-                "/usr/lib/jvm/java-11-openjdk-amd64",
-                "/usr/lib/jvm/java-17-openjdk-amd64",
+                f"/usr/lib/jvm/java-11-openjdk-{arch_suffix}",
+                f"/usr/lib/jvm/java-17-openjdk-{arch_suffix}",
+                f"/usr/lib/jvm/java-21-openjdk-{arch_suffix}",
             ]:
                 if Path(common_java_home).exists():
                     cmd.extend([
                         f"-I{common_java_home}/include",
-                        f"-I{common_java_home}/include/linux",
+                        f"-I{common_java_home}/include/{self._jni_include_subdir()}",
                     ])
                     break
 
@@ -252,6 +258,17 @@ class Compiler:
             result.output_file = output_so
 
         return result
+
+    def _jni_include_subdir(self) -> str:
+        """Return platform-specific JNI include subdirectory."""
+        system = platform.system().lower()
+        if system == "linux":
+            return "linux"
+        elif system == "darwin":
+            return "darwin"
+        elif system == "windows":
+            return "win32"
+        return "linux"  # default
 
     def _run_command(self, cmd: list[str], cwd: Path) -> CompileResult:
         """Run a shell command and capture output."""
