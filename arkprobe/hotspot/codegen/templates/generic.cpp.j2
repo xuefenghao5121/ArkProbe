@@ -1,0 +1,48 @@
+/**
+ * Generic JNI wrapper template for unclassified hotspot methods.
+ *
+ * This template is used as fallback when pattern type is "unknown".
+ * It provides a basic JNI bridge that can be manually completed.
+ */
+
+#include <jni.h>
+
+/**
+ * Generic hotspot method accelerator
+ *
+ * Pattern: {{ pattern_type }}
+ * Class: {{ class_name }}
+ * Method: {{ method_name }}
+ * Signature: {{ signature }}
+ *
+ * This is a stub implementation. Replace with actual C++ logic
+ * after analyzing the Java bytecode.
+ */
+extern "C"
+JNIEXPORT {{ return_type }} JNICALL
+Java_{{ mangled_class_name }}_{{ method_name }}(
+    JNIEnv* env,
+    jobject thiz
+    {%- for param in params %},
+    {{ param.jni_type }} {{ param.name }}
+    {%- endfor %}
+) {
+    // TODO: Implement actual method logic here
+    // Current bytecode analysis:
+    //   {{ original_bytecode | truncate(200) }}
+    //
+    // Suggested approach:
+    // 1. Extract algorithm from bytecode
+    // 2. Implement in native C++
+    // 3. Replace this stub
+
+    {%- if return_type == "void" %}
+    return;
+    {%- elif return_type in ["jboolean", "jbyte", "jchar", "jshort", "jint", "jlong"] %}
+    return 0;
+    {%- elif return_type in ["jfloat", "jdouble"] %}
+    return 0.0;
+    {%- else %}
+    return nullptr;
+    {%- endif %}
+}

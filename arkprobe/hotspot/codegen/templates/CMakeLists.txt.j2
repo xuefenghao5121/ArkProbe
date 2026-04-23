@@ -1,0 +1,59 @@
+cmake_minimum_required(VERSION 3.13)
+project({{ library_name }})
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+{% if optimization_level %}
+# Optimization level
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -{{ optimization_level }}")
+{% endif %}
+
+{% if target_arch %}
+# Target architecture flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march={{ target_arch }}")
+{% endif %}
+
+# Common compile options
+add_compile_options(
+    -fPIC
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+    $<$<CONFIG:DEBUG>:-g3>
+    $<$<CONFIG:RELEASE>:-O3>
+)
+
+# Find JNI
+find_package(JNI REQUIRED)
+include_directories(${JNI_INCLUDE_DIRS})
+
+# Source files
+set(SOURCES
+{%- for source in sources %}
+    {{ source }}
+{%- endfor %}
+    jni_bridge.cpp
+)
+
+# Build shared library
+add_library({{ library_name }} SHARED ${SOURCES})
+
+target_include_directories({{ library_name }} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries({{ library_name }}
+    ${JNI_LIBRARIES}
+)
+
+# Output naming
+set_target_properties({{ library_name }} PROPERTIES
+    PREFIX "lib"
+    OUTPUT_NAME "{{ library_name }}"
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+message(STATUS "Building {{ library_name }} with target arch: {{ target_arch }}")
+message(STATUS "  Sources: ${SOURCES}")
+message(STATUS "  Output: ${CMAKE_CURRENT_BINARY_DIR}/lib{{ library_name }}.so")
