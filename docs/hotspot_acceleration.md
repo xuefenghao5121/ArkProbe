@@ -436,13 +436,96 @@ pytest tests/test_hotspot/test_e2e_integration.py -v
 
 ---
 
+## 真实 Workload 性能验证
+
+### 概述
+
+在 HotspotBench 微基准测试之外，使用 5 个真实计算密集型 Java 算法验证 C++ 加速效果。这些是科学计算、信号处理和机器学习中常见的真实算法，而非人为构造的微内核。
+
+### 工具集
+
+| 文件 | 说明 |
+|------|------|
+| `arkprobe/benchmarks/java/RealWorkloadBench.java` | 自包含 Java benchmark，5 个真实算法，自动检测 native 库 |
+| `arkprobe/benchmarks/java/arkprobe_realworkload.cpp` | C++ JNI 实现，ARM NEON / x86 AVX2 / scalar 三路分支 |
+| `arkprobe/benchmarks/real_workload_benchmark.sh` | 一键全流程：编译 → 基线 → 加速 → 对比 |
+
+### 快速运行
+
+```bash
+cd arkprobe/benchmarks
+
+# 一键全流程
+./real_workload_benchmark.sh
+
+# 仅 Java 基线
+./real_workload_benchmark.sh --java-only
+```
+
+### 5 个真实算法
+
+| 方法 | 算法 | 数据规模 | C++ 优化技术 |
+|------|------|---------|-------------|
+| `fftTransform` | Cooley-Tukey radix-2 1D FFT | 2^20 (1M) 点, 50 次 | 蝶形运算 SIMD 展开 |
+| `sorIteration` | 红黑 SOR 迭代（PDE 求解器） | 500×500, 50 迭代 | 标量循环（红黑模式不规则访问） |
+| `sparseMatvec` | CSR 稀疏矩阵向量乘 | 100K×100K, 10 nnz/行, 200 次 | 逐行 SIMD 点积 + 展开 |
+| `luDecompose` | 部分主元 LU 分解 | 512×512, 10 次 | SIMD 行消去（NEON vmlsq / AVX2） |
+| `kmeansAssign` | KMeans 距离计算 | 100K 点 × 32 维 × 64 质心, 50 次 | SIMD 距离计算（dx²+dy²+...） |
+
+### x86 实测结果
+
+| 方法 | Java (ms) | C++ (ms) | 加速比 | 分析 |
+|------|-----------|----------|--------|------|
+| `luDecompose` | 270 | 134 | **2.0x** | 行消去是连续内存 SIMD 操作，收益最大 |
+| `sparseMatvec` | 210 | 156 | **1.3x** | 逐行 SIMD 点积有效，但 gather-scatter 访存限制收益 |
+| `kmeansAssign` | 4850 | 3710 | **1.3x** | 距离计算是完美 SIMD 场景，但 n×k 循环结构限制了向量化比例 |
+| `sorIteration` | 143 | 118 | **1.2x** | 红黑模式跳步访问，SIMD 无效但 C++ 编译优化仍有收益 |
+| `fftTransform` | 2000 | 1950 | **1.0x** | 蝶形运算数据依赖强，twiddle 旋转串行，SIMD 收益被 JNI 开销抵消 |
+
+### 与微基准测试对比
+
+| 类别 | 微基准 (HotspotBench) | 真实算法 (RealWorkload) | 说明 |
+|------|----------------------|----------------------|------|
+| 数值向量 | 1.1-5.6x | — | 微基准数据布局完美适配 SIMD |
+| 行消去/矩阵 | 1.1x (64×64) | **2.0x** (512×512 LU) | 大矩阵 JNI 边界成本占比低，SIMD 收益显著 |
+| 距离计算 | — | **1.3x** (KMeans) | n×k×dim 三层循环，中间层向量化 |
+| 稀疏计算 | — | **1.3x** (Sparse) | gather-scatter 限制，但仍有收益 |
+| 模板迭代 | — | **1.2x** (SOR) | 红黑模式不规则访问，SIMD 无效 |
+| FFT 蝶形 | — | **1.0x** (FFT) | 数据依赖强，twiddle 串行旋转 |
+
+### 关键发现
+
+1. **真实算法加速比低于微基准**：微基准的数据布局是手工优化的完美场景，真实算法有更多不规则访问和数据依赖
+2. **LU 分解加速最大**（2.0x）：行消去是连续内存操作，SIMD 效率最高
+3. **FFT 收益最小**（1.0x）：蝶形运算中 twiddle 因子递推是串行的，SIMD 无法有效向量化
+4. **SOR 仍有收益**（1.2x）：虽然红黑跳步模式不适合 SIMD，但 C++ 编译器优化（循环展开、指令调度）仍带来收益
+5. **数据规模决定 JNI 边界成本占比**：LU 512×512 比 HotspotBench 64×64 的加速比高得多，因为计算量增大后 JNI 开销占比降低
+
+### 推荐加速策略（更新）
+
+| 场景 | 推荐策略 | 预期加速 |
+|------|---------|---------|
+| 数值向量 map/reduce/filter | C++ SIMD + CriticalArray | 1.5-5.6x |
+| 大矩阵行消去 (≥256×256) | C++ SIMD 行操作 | 2.0x |
+| 数学函数（sigmoid/relu） | C++ libm + SIMD | 1.2-1.4x |
+| KMeans 距离计算 | C++ SIMD 距离 | 1.3x |
+| 稀疏矩阵向量乘 | C++ SIMD 逐行点积 | 1.3x |
+| 大矩阵乘法 (≥256×256) | C++ cache-blocked GEMM | 2-4x |
+| 模板迭代（SOR） | C++ 编译优化（非 SIMD） | 1.2x |
+| FFT 蝶形运算 | 不推荐 C++ 化 | ~1.0x |
+| 内存带宽密集型 | 不推荐 C++ 化 | ~1.0x |
+| 字符串处理 | 不推荐 JNI C++ 化 | <1.0x |
+
+---
+
 ## 下一步
 
 - 支持 ARM SVE（可伸缩向量扩展）而非仅 NEON
 - 批量字符串处理接口：减少 JNI 调用次数（一次传入 String[] 而非逐条）
 - 自动回退机制：C++ 失败时自动切回 Java 实现
 - 运行时监控：动态决策是否启用加速（基于输入规模阈值）
-- 大矩阵 (≥256x256) 专用 benchmark 验证
+- 鲲鹏 930 实机验证真实 workload 加速比
+- FFT 优化：尝试 4-step / split-radix 算法提高 SIMD 利用率
 
 ---
 

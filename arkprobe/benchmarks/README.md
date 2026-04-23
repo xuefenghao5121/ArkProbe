@@ -169,3 +169,77 @@ vector_reduce            79.812       14.301      5.58x
 - C++ compiled with `-O3 -march=native -fPIC -shared`
 - `GetPrimitiveArrayCritical` used for numeric arrays (zero-copy JNI access)
 - String methods are slower in C++ due to per-string JNI conversion overhead — this is a fundamental JNI limitation
+
+---
+
+## Real Workload Benchmark
+
+`real_workload_benchmark.sh` — End-to-end benchmark comparing pure Java vs. C++-accelerated performance for 5 real compute-intensive algorithms (not micro-benchmarks).
+
+### Quick Start
+
+```bash
+cd /path/to/arkprobe/arkprobe/benchmarks
+
+# Full pipeline: compile Java → baseline → compile C++ → accelerated → compare
+./real_workload_benchmark.sh
+
+# Java baseline only (no C++ acceleration)
+./real_workload_benchmark.sh --java-only
+```
+
+### Prerequisites
+
+- JDK 21+ (`openjdk-21-jdk` or equivalent)
+- `g++` with C++17 support
+- `python3` (for `compare_results.py`)
+
+### Parameters
+
+| Option | Description |
+|--------|-------------|
+| `--java-only` | Only run Java baseline, no C++ acceleration |
+| `-h` / `--help` | Show help message |
+
+### Benchmark Methods (5 real algorithms)
+
+| Method | Algorithm | Data Size | C++ Optimization |
+|--------|-----------|-----------|-----------------|
+| `fftTransform` | Cooley-Tukey radix-2 1D FFT | 2^20 (1M) points, 50 iters | SIMD butterfly expansion |
+| `sorIteration` | Red-black SOR (PDE solver) | 500x500, 50 iters | Scalar loop (irregular access) |
+| `sparseMatvec` | CSR sparse matrix-vector multiply | 100Kx100K, 10 nnz/row, 200 iters | SIMD dot product per row |
+| `luDecompose` | LU decomposition with partial pivoting | 512x512, 10 iters | SIMD row elimination |
+| `kmeansAssign` | KMeans distance calculation | 100K pts x 32 dim x 64 centroids, 50 iters | SIMD distance (dx^2+dy^2+...) |
+
+### x86 Measured Results
+
+| Method | Java (ms) | C++ (ms) | Speedup | Notes |
+|--------|-----------|----------|---------|-------|
+| `luDecompose` | 270 | 134 | **2.0x** | Contiguous SIMD row elimination |
+| `sparseMatvec` | 210 | 156 | **1.3x** | SIMD per-row, gather-scatter limits |
+| `kmeansAssign` | 4850 | 3710 | **1.3x** | SIMD distance, n*k*dim triple loop |
+| `sorIteration` | 143 | 118 | **1.2x** | Compiler optimization (not SIMD) |
+| `fftTransform` | 2000 | 1950 | **1.0x** | Sequential twiddle rotation limits SIMD |
+
+### Key Findings
+
+1. **Real algorithms show more nuanced results** than micro-benchmarks — data dependencies and irregular access patterns reduce SIMD effectiveness
+2. **LU decomposition benefits most** (2.0x) — contiguous row elimination is ideal for SIMD
+3. **FFT benefits least** (1.0x) — butterfly twiddle rotation is sequential, SIMD overhead not worth it
+4. **Larger data sizes reduce JNI overhead** — 512x512 LU gets 2.0x vs 64x64 matmul's 1.1x in micro-benchmarks
+5. **Even non-SIMD methods benefit** — SOR gets 1.2x from compiler optimization alone
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `java/RealWorkloadBench.java` | Self-contained Java benchmark with 5 real algorithms |
+| `java/arkprobe_realworkload.cpp` | C++ JNI implementation (ARM NEON / x86 AVX2 / scalar) |
+| `real_workload_benchmark.sh` | Orchestration script |
+
+### Notes
+
+- Library named `libarkprobe_realworkload.so` (separate from HotspotBench's `libarkprobe_hotspot.so`)
+- All methods use `GetPrimitiveArrayCritical` for zero-copy array access
+- SOR C++ uses scalar loop matching Java stride-2 access pattern (SIMD would be incorrect for red-black)
+- Benchmark includes 5-iteration warmup before measurement
