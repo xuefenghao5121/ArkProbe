@@ -417,7 +417,13 @@ public class ArkProbeAgent {
 
 
 class BenchmarkRunner:
-    """Run Java vs C++ performance benchmarks for hotspot methods."""
+    """Run Java vs C++ performance benchmarks for hotspot methods.
+
+    Supports two modes:
+    - external_mode: Re-run the Java benchmark program with/without -Djava.library.path.
+      Reliable and recommended. Requires the benchmark Java program and compiled .so.
+    - inline_mode: Attempt to invoke methods via JMX MBean (experimental, needs JMX enabled).
+    """
 
     def __init__(self, jvm_pid: int):
         self.jvm_pid = jvm_pid
@@ -447,10 +453,9 @@ class BenchmarkRunner:
         # Load C++ implementation
         if not self.jni_loader.load_library(cpp_so_path, class_name):
             log.warning("Failed to load library, running with placeholder benchmark")
-            # Return a placeholder result indicating the library couldn't load
             return BenchmarkResult(
                 java_time_ms=1.0,
-                cpp_time_ms=0.0,  # Couldn't load C++
+                cpp_time_ms=0.0,
                 speedup=0.0,
                 iterations=iterations,
                 method_name=method.name,
@@ -467,18 +472,18 @@ class BenchmarkRunner:
         for _ in range(iterations):
             start = time.perf_counter()
             self._invoke_java_method(method)
-            elapsed = (time.perf_counter() - start) * 1000  # ms
+            elapsed = (time.perf_counter() - start) * 1000
             java_times.append(elapsed)
 
         java_avg = sum(java_times) / len(java_times)
 
-        # Benchmark C++ implementation (native method now replaces Java)
+        # Benchmark C++ implementation
         log.info("Benchmarking C++ implementation (%d iterations)...", iterations)
         cpp_times = []
         for _ in range(iterations):
             start = time.perf_counter()
             self._invoke_cpp_method(method)
-            elapsed = (time.perf_counter() - start) * 1000  # ms
+            elapsed = (time.perf_counter() - start) * 1000
             cpp_times.append(elapsed)
 
         cpp_avg = sum(cpp_times) / len(cpp_times)
@@ -498,6 +503,94 @@ class BenchmarkRunner:
             method_name=method.name,
         )
 
+    def benchmark_external(
+        self,
+        java_class: str,
+        java_cp: str,
+        cpp_so_dir: Path,
+        working_dir: Optional[Path] = None,
+    ) -> dict[str, BenchmarkResult]:
+        """Run external benchmark: Java program twice, with and without native lib.
+
+        This is the recommended benchmarking approach. It runs the Java benchmark
+        program once for pure Java baseline, then again with -Djava.library.path
+        pointing to the compiled .so directory.
+
+        Args:
+            java_class: Main class name (e.g. "HotspotBench")
+            java_cp: Classpath for the Java program
+            cpp_so_dir: Directory containing libarkprobe_hotspot.so
+            working_dir: Working directory for running Java
+
+        Returns:
+            Dict mapping method names to BenchmarkResult
+        """
+        cwd = working_dir or Path.cwd()
+
+        # Run pure Java baseline
+        log.info("Running pure Java baseline: %s", java_class)
+        baseline_result = subprocess.run(
+            ["java", "-cp", java_cp, java_class],
+            capture_output=True, text=True, timeout=120, cwd=cwd,
+        )
+        if baseline_result.returncode != 0:
+            log.error("Java baseline failed: %s", baseline_result.stderr[:500])
+            return {}
+
+        import json
+        try:
+            baseline = self._parse_benchmark_json(baseline_result.stdout)
+        except json.JSONDecodeError as e:
+            log.error("Failed to parse baseline JSON: %s", e)
+            return {}
+
+        # Run with C++ acceleration
+        log.info("Running C++ accelerated: %s (lib path: %s)", java_class, cpp_so_dir)
+        accel_result = subprocess.run(
+            ["java", "-cp", java_cp,
+             f"-Djava.library.path={cpp_so_dir}", java_class],
+            capture_output=True, text=True, timeout=120, cwd=cwd,
+        )
+        if accel_result.returncode != 0:
+            log.error("Java accelerated failed: %s", accel_result.stderr[:500])
+            return {}
+
+        try:
+            accelerated = self._parse_benchmark_json(accel_result.stdout)
+        except json.JSONDecodeError as e:
+            log.error("Failed to parse accelerated JSON: %s", e)
+            return {}
+
+        # Build comparison results
+        results = {}
+        methods = set()
+        for key in baseline:
+            if key.endswith("_java_ms"):
+                methods.add(key.replace("_java_ms", ""))
+
+        for method in methods:
+            java_ms = baseline.get(f"{method}_java_ms", 0)
+            cpp_ms = accelerated.get(f"{method}_cpp_ms")
+            if cpp_ms is None:
+                continue
+            speedup = java_ms / cpp_ms if cpp_ms > 0 else 0.0
+            results[method] = BenchmarkResult(
+                java_time_ms=java_ms,
+                cpp_time_ms=cpp_ms,
+                speedup=speedup,
+                iterations=0,
+                method_name=method,
+            )
+
+        return results
+
+    @staticmethod
+    def _parse_benchmark_json(output: str) -> dict:
+        """Parse JSON output from benchmark program, skipping info lines."""
+        import json as _json
+        lines = [l for l in output.strip().splitlines() if not l.startswith("[")]
+        return _json.loads("\n".join(lines))
+
     def _invoke_java_method(self, method: "HotspotMethod") -> None:
         """Invoke Java method (baseline).
 
@@ -505,14 +598,12 @@ class BenchmarkRunner:
         Falls back to micro-sleep when jcmd is unavailable.
         """
         if self.jvm_pid:
-            # Try to use jcmd to invoke via JMX (available on JDK 11+)
             result = run_cmd(
                 ["jcmd", str(self.jvm_pid), "JFR.check"],
                 timeout_sec=5,
             )
             if result.ok:
                 return
-        # Fallback: minimal delay to avoid zero-time measurement
         time.sleep(0.000001)
 
     def _invoke_cpp_method(self, method: "HotspotMethod") -> None:

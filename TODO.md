@@ -3,6 +3,15 @@
 ## 当前版本
 **v0.3.1** (commit: pending)
 
+### v0.3.1 最新进展
+
+- [x] Hotspot C++ 加速 benchmark 全流程（HotspotBench.java + arkprobe_hotspot.cpp + hotspot_benchmark.sh + compare_results.py）
+- [x] 11 方法 × 4 模式实测：vector_reduce 5.6x, vector_map 1.5x, math 1.2-1.4x
+- [x] JNI 优化：GetPrimitiveArrayCritical 免拷贝、extern "C" 防修饰
+- [x] 性能发现：字符串 JNI 开销致命（0.16-0.4x），内存带宽受限方法 ~1.0x
+- [x] BenchmarkRunner.benchmark_external() 两次运行对比法
+- [x] 文档更新：hotspot_acceleration.md + benchmarks/README.md
+
 ---
 
 ## P0 — 必须解决
@@ -110,6 +119,9 @@
 - [x] 集成测试：Java vs C++ 性能对比（目标 3-5x 加速）
 - [x] 37 个 hotspot 测试用例通过
 - [x] 270 个全量测试通过
+- [x] 实测 benchmark：11 方法 × 4 模式，vector_reduce 达 5.6x
+- [x] HotspotBench.java + arkprobe_hotspot.cpp + hotspot_benchmark.sh
+- [x] JNI 优化：GetPrimitiveArrayCritical、extern "C"
 
 #### Bug 修复（2026-04-23）
 - [x] CRITICAL: JNI 名称修饰双重 Java_ 前缀 — cpp_generator.py 不再预加 Java_，由模板统一添加
@@ -131,7 +143,7 @@
 
 ## 完成项
 
-### v0.3.1 — Java 热点 C++ 化（2026-04-22）
+### v0.3.1 — Java 热点 C++ 化 + Benchmark（2026-04-22/23）
 - [x] JFR 热点采集 (jdk.ExecutionSample)
 - [x] 字节码提取 (jcmd HSDB / javap)
 - [x] PatternMatcher: 模式识别（向量表达式/字符串/数学/访存）
@@ -198,5 +210,5 @@
 | 版本 | 目标 | 状态 |
 |------|------|------|
 | v0.3.0 | JVM 应用分析 | ✅ 完成 |
-| v0.3.1 | 热点 C++ 化 + Bug 修复 | ✅ 完成 |
+| v0.3.1 | 热点 C++ 化 + Bug 修复 + Benchmark | ✅ 完成 |
 | v0.4.0 | Windows GUI + 容器级采集 | 📋 规划中 |

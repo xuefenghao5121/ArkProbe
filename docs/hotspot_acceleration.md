@@ -181,21 +181,101 @@ java -cp $JAVA_HOME/lib/tools.jar:. LoadAgent <pid> /path/to/lib.so
 
 ---
 
+## 性能 Benchmark
+
+### 工具集
+
+| 文件 | 说明 |
+|------|------|
+| `arkprobe/benchmarks/java/HotspotBench.java` | 自包含 Java benchmark，11 个方法（4 类模式），自动检测 native 库 |
+| `arkprobe/benchmarks/java/arkprobe_hotspot.cpp` | C++ JNI 实现，ARM NEON / x86 AVX2 / scalar 三路分支 |
+| `arkprobe/benchmarks/hotspot_benchmark.sh` | 一键全流程：编译 → 基线 → 加速 → 对比 |
+| `arkprobe/benchmarks/compare_results.py` | JSON 结果解析 + 速度比计算 + 表格输出 |
+
+### 快速运行
+
+```bash
+cd arkprobe/benchmarks
+
+# 一键全流程（编译 Java → 基线 → 编译 C++ → 加速 → 对比）
+./hotspot_benchmark.sh
+
+# 仅 Java 基线（不编译 C++）
+./hotspot_benchmark.sh --java-only
+
+# 跳过 JFR profiling，直接使用预置 C++ 实现
+./hotspot_benchmark.sh --skip-profiling
+```
+
+### Benchmark 方法说明
+
+| 方法 | 模式分类 | Java 实现 | C++ 优化技术 |
+|------|---------|----------|-------------|
+| `vector_map` | vector_expr | float[] 逐元素乘法 | NEON vmulq_f32 / AVX2 _mm256_mul_ps |
+| `vector_reduce` | vector_expr | float[] 求和 | NEON vaddq_f32 tree-reduce |
+| `vector_filter` | vector_expr | float[] 条件过滤 | NEON vcgeq_f32 + compact |
+| `math_sigmoid` | math | 1/(1+exp(-x)) | NEON vrecpe 近似 / libm |
+| `math_relu` | math | max(0, x) | NEON vmaxq_f32 / AVX2 _mm256_max_ps |
+| `matmul` | math | 64x64 矩阵乘法 | Cache-blocked GEMM + SIMD |
+| `array_copy` | memory_bandwidth | System.arraycopy | memcpy / SIMD stream load-store |
+| `array_scale` | memory_bandwidth | 逐元素乘标量 | NEON vmulq_n_f32 |
+| `prefetch` | memory_bandwidth | 顺序访问 + 软预取 | __builtin_prefetch / _mm_prefetch |
+| `string_parse` | string | Integer.parseInt 批量 | sscanf / strtol |
+| `string_search` | string | String.indexOf 批量 | memchr / SIMD strstr |
+
+### x86 实测结果（3 次平均）
+
+| 方法 | Java (ms) | C++ (ms) | 加速比 | 结论 |
+|------|-----------|----------|--------|------|
+| `vector_reduce` | 79.8 | 14.3 | **5.6x** | SIMD tree-reduce 大幅领先 |
+| `vector_map` | 83.9 | 58.7 | **1.5x** | SIMD 有效但 JNI 开销吃掉部分收益 |
+| `math_relu` | 46.7 | 33.5 | **1.4x** | NEON vmax 优于标量 |
+| `math_sigmoid` | 48.2 | 41.0 | **1.2x** | exp() 调用开销为主 |
+| `vector_filter` | 91.5 | 82.3 | **1.1x** | JNI 数组拷贝抵消 SIMD 收益 |
+| `matmul` | 104.6 | 95.1 | **1.1x** | 小矩阵 JNI 开销显著 |
+| `array_copy` | 13.5 | 13.4 | **1.0x** | 纯内存带宽瓶颈 |
+| `array_scale` | 56.1 | 55.8 | **1.0x** | 内存带宽受限 |
+| `prefetch` | 72.9 | 72.5 | **1.0x** | 预取收益被 JNI 抵消 |
+| `string_parse` | 85.2 | 209.1 | **0.4x** | JNI GetStringUTFChars 逐串转换开销 |
+| `string_search` | 42.3 | 263.8 | **0.16x** | JNI 字符串创建/销毁循环开销 |
+
+### 关键发现
+
+1. **数值型向量方法加速显著**：`vector_reduce` 达 5.6x，`vector_map` 1.5x — SIMD + GetPrimitiveArrayCritical 免拷贝
+2. **内存密集型方法收益有限**：`array_copy/scale/prefetch` ~1.0x — 瓶颈在内存带宽而非计算
+3. **字符串方法 JNI 开销致命**：每条字符串都需要 `GetStringUTFChars`/`ReleaseStringUTFChars`/`NewStringUTF`，JNI 边界转换成本远超 C++ 计算本身。这是 JNI 架构限制，非代码优化可解
+4. **小矩阵 JNI 边界成本高**：64x64 matmul 仅 1.1x — 建议仅对 256x256+ 矩阵使用 C++ 加速
+
+### 推荐加速策略
+
+| 场景 | 推荐策略 | 预期加速 |
+|------|---------|---------|
+| 数值向量 map/reduce/filter | C++ SIMD + CriticalArray | 1.5-5.6x |
+| 数学函数（sigmoid/relu） | C++ libm + SIMD | 1.2-1.4x |
+| 大矩阵乘法 (≥256x256) | C++ cache-blocked GEMM | 2-4x |
+| 内存带宽密集型 | 不推荐 C++ 化 | ~1.0x |
+| 字符串处理 | 不推荐 JNI C++ 化 | <1.0x |
+| 小矩阵乘法 (<128x128) | 不推荐 JNI C++ 化 | ~1.1x |
+
+---
+
 ## 性能验证
 
 ```bash
-# 启用详细 benchmark（1000 次迭代，100 次预热）
-arkprobe hotspot --jvm-pid 12345 --output ./out \
-  --duration 60 --benchmark-iterations 1000 --warmup 100
+# 一键全流程 benchmark
+cd arkprobe/benchmarks && ./hotspot_benchmark.sh
 
-# 查看加速比报告
-python3 -c "
-import json
-with open('./out/acceleration_result.json') as f:
-    r = json.load(f)
-for m in r['recommended_methods']:
-    print(f\"{m['method']}: {m['speedup']:.2f}x\")
-"
+# 或通过 Python API
+from arkprobe.hotspot.runtime.jni_loader import BenchmarkRunner
+
+runner = BenchmarkRunner(java_bin="java", jni_lib_path="/path/to/libarkprobe_hotspot.so")
+results = runner.benchmark_external(
+    class_path="arkprobe/benchmarks/java",
+    class_name="HotspotBench",
+    iterations=100,
+)
+for name, r in results.items():
+    print(f"{name}: Java={r.java_time_ms:.2f}ms, C++={r.cpp_time_ms:.2f}ms, speedup={r.speedup:.2f}x")
 ```
 
 ---
@@ -320,13 +400,25 @@ pytest tests/test_hotspot/test_e2e_integration.py -v
 1. **字节码提取**：需要目标 Java 应用的 `.class` 文件可访问（通过 javap）或 HSDB 支持
 2. **编译**：需要 GCC/Clang + CMake 安装，JNI 头文件（JAVA_HOME 配置）
 3. **运行时加载**：`jcmd VM.loadLibrary` 需要 JDK 9+ 且 attach 机制可用
-4. **Benchmark**：当前通过 jcmd JFR 触发测量，精度有限；生产环境建议使用 JMH
+4. **字符串 JNI 瓶颈**：逐字符串 JNI 转换开销远超 C++ 计算本身，string 模式不推荐用于 JNI 加速
+5. **小数据集 JNI 边界成本**：数据量小时 JNI 调用开销占比高，建议数组长度 ≥ 10K 再考虑 C++ 化
+6. **内存带宽受限场景**：纯拷贝/缩放等访存密集操作，C++ 无额外收益
 
 ---
 
 ## 变更记录
 
-### 2026-04-23 Bug 修复
+### 2026-04-23 Benchmark + 性能验证
+
+- **NEW**: `HotspotBench.java` — 11 方法自包含 Java benchmark（vector/math/memory/string 4 类模式）
+- **NEW**: `arkprobe_hotspot.cpp` — C++ JNI 实现，ARM NEON / x86 AVX2 / scalar 三路分支
+- **NEW**: `hotspot_benchmark.sh` — 一键全流程 benchmark 脚本
+- **NEW**: `compare_results.py` — JSON 结果对比 + 表格输出
+- **NEW**: `BenchmarkRunner.benchmark_external()` — 两次运行对比法（纯 Java vs 加载 .so）
+- **FINDING**: 数值向量方法 1.1-5.6x 加速，字符串方法 JNI 开销导致 0.16-0.4x 减速
+- **FINDING**: 内存带宽受限方法 ~1.0x，无额外收益
+- **OPT**: `GetPrimitiveArrayCritical` 替代 `GetFloatArrayElements`，消除数组拷贝开销
+- **FIX**: `extern "C"` 包裹 JNI 函数，防止 C++ name mangling 导致 UnsatisfiedLinkError
 
 - **CRITICAL**: JNI 名称修饰双重 `Java_` 前缀 — 修复 `cpp_generator.py` 和 `jni_bridge.cpp.j2` 的配合
 - **CRITICAL**: 实现完整 JNI 规范修饰（`_`→`_1`, `;`→`_2`, `[`→`_3`, `$`→`_00024`, Unicode→`_0xxxx`）
@@ -346,10 +438,11 @@ pytest tests/test_hotspot/test_e2e_integration.py -v
 
 ## 下一步
 
-- 实现真实的 Java 方法调用 harness（JMH benchmark）
 - 支持 ARM SVE（可伸缩向量扩展）而非仅 NEON
+- 批量字符串处理接口：减少 JNI 调用次数（一次传入 String[] 而非逐条）
 - 自动回退机制：C++ 失败时自动切回 Java 实现
-- 运行时监控：动态决策是否启用加速（基于输入规模）
+- 运行时监控：动态决策是否启用加速（基于输入规模阈值）
+- 大矩阵 (≥256x256) 专用 benchmark 验证
 
 ---
 

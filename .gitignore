@@ -18,3 +18,6 @@ arkprobe/benchmarks/jvm_load_test_workspace/
 # GC logs from JVM tests
 gc.log
 *.class
+# JNI build artifacts
+*.h
+libarkprobe_hotspot.so
