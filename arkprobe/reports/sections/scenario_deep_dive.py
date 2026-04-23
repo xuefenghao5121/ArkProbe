@@ -6,27 +6,40 @@ from ...analysis.bottleneck_analyzer import BottleneckReport
 from ..charts import ChartFactory
 
 
-def _get_severity_class(value: float, thresholds: tuple) -> str:
+def _get_severity_class(value: float, thresholds: tuple, higher_is_better: bool = True) -> str:
     """Get severity class based on value and thresholds.
 
-    thresholds: (good, moderate, high) - value below first is good, etc.
+    thresholds: (good, moderate, high) — boundary values.
+    higher_is_better: True for metrics like IPC (high=good), False for MPKI (low=good).
     """
-    if value < thresholds[0]:
-        return "severity-good"
-    elif value < thresholds[1]:
-        return "severity-moderate"
-    elif value < thresholds[2]:
-        return "severity-significant"
+    if higher_is_better:
+        # Inverted: low value is bad (critical), high value is good
+        if value < thresholds[0]:
+            return "severity-critical"
+        elif value < thresholds[1]:
+            return "severity-significant"
+        elif value < thresholds[2]:
+            return "severity-moderate"
+        else:
+            return "severity-good"
     else:
-        return "severity-critical"
+        if value < thresholds[0]:
+            return "severity-good"
+        elif value < thresholds[1]:
+            return "severity-moderate"
+        elif value < thresholds[2]:
+            return "severity-significant"
+        else:
+            return "severity-critical"
 
 
 def _render_metric_card(value: float, label: str, unit: str = "",
-                        thresholds: tuple = None, format_str: str = ".1f") -> str:
+                        thresholds: Optional[tuple] = None, format_str: str = ".1f",
+                        higher_is_better: bool = True) -> str:
     """Render a metric card with severity coloring."""
     severity_class = ""
     if thresholds:
-        severity_class = _get_severity_class(value, thresholds)
+        severity_class = _get_severity_class(value, thresholds, higher_is_better)
 
     display_value = f"{value:{format_str}}{unit}"
     return f"""
@@ -62,10 +75,10 @@ def render_scenario_section(
     # Branch MPKI: good < 5, moderate < 10, high < 20
     metrics = f"""
     <div class="grid-4">
-        {_render_metric_card(fv.compute.ipc, "IPC", "", thresholds=(2.0, 3.0, 4.0), format_str=".2f")}
-        {_render_metric_card(fv.cache.l3_mpki, "L3 MPKI", "", thresholds=(5.0, 15.0, 25.0))}
-        {_render_metric_card(fv.branch.branch_mpki, "Branch MPKI", "", thresholds=(5.0, 10.0, 20.0))}
-        {_render_metric_card(fv.memory.bandwidth_utilization * 100, "Mem BW", "%", thresholds=(50, 70, 85), format_str=".0f")}
+        {_render_metric_card(fv.compute.ipc, "IPC", "", thresholds=(1.0, 2.0, 3.0), format_str=".2f", higher_is_better=True)}
+        {_render_metric_card(fv.cache.l3_mpki, "L3 MPKI", "", thresholds=(5.0, 15.0, 25.0), higher_is_better=False)}
+        {_render_metric_card(fv.branch.branch_mpki, "Branch MPKI", "", thresholds=(5.0, 10.0, 20.0), higher_is_better=False)}
+        {_render_metric_card(fv.memory.bandwidth_utilization * 100, "Mem BW", "%", thresholds=(50, 70, 85), format_str=".0f", higher_is_better=True)}
     </div>"""
 
     # Bottleneck analysis narrative with improved formatting

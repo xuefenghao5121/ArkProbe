@@ -144,7 +144,7 @@ class JfrCollector(BaseCollector):
         start_cmd = [
             "jcmd", str(pid), "JFR.start",
             f"name={recording_name}",
-            "settings=profile",
+            f"settings={events_str}",
             f"duration={duration_sec}s",
             f"filename={jfr_file}",
         ]

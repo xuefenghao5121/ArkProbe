@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
 from ..model.enums import AccessPattern
@@ -154,10 +153,15 @@ class DesignSpaceExplorer:
         """
         matrix = self.cross_workload_matrix(feature_vectors)
 
+        fv_map = {fv.scenario_name: fv for fv in feature_vectors}
+
         # Apply priority weights
         if priority_weights:
             for idx in matrix.index:
-                fv = next(f for f in feature_vectors if f.scenario_name == idx)
+                fv = fv_map.get(idx)
+                if fv is None:
+                    log.warning("No feature vector for scenario: %s", idx)
+                    continue
                 weight = priority_weights.get(fv.scenario_type.value, 1.0)
                 matrix.loc[idx] *= weight
 

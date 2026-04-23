@@ -22,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -555,7 +555,6 @@ class HardwareTuner:
                 disable_path = cstate_path / "disable"
                 if disable_path.exists():
                     disable_path.write_text("0")
-            break  # Only need to do first CPU
 
         if errors:
             logger.error(f"Errors during restoration: {errors}")

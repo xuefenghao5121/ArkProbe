@@ -247,8 +247,8 @@ class TestBenchmarkRunnerIntegration:
 
     @mock.patch("arkprobe.hotspot.runtime.jni_loader.run_cmd")
     @mock.patch("arkprobe.hotspot.runtime.jni_loader.JNILoader.load_library")
-    def test_benchmark_runner_placeholder(self, mock_load, mock_run_cmd):
-        """Test benchmark runner with mocked method."""
+    def test_benchmark_runner_raises_not_implemented(self, mock_load, mock_run_cmd):
+        """benchmark_method() raises NotImplementedError — use benchmark_external()."""
         mock_load.return_value = True
 
         runner = BenchmarkRunner(jvm_pid=12345)
@@ -258,18 +258,14 @@ class TestBenchmarkRunnerIntegration:
             signature="(D)D",
         )
 
-        with mock.patch("pathlib.Path.exists", return_value=True):
-            result = runner.benchmark_method(
-                method,
-                cpp_so_path=Path("/nonexistent/lib.so"),
-                iterations=10,
-                warmup_iters=5,
-            )
-
-        assert result.method_name == "test.Example.compute"
-        assert result.iterations == 10
-        assert result.speedup_factor > 0
-
+        with pytest.raises(NotImplementedError, match="benchmark_external"):
+            with mock.patch("pathlib.Path.exists", return_value=True):
+                runner.benchmark_method(
+                    method,
+                    cpp_so_path=Path("/nonexistent/lib.so"),
+                    iterations=10,
+                    warmup_iters=5,
+                )
 
 class TestFullPipeline:
     """Full pipeline integration tests."""

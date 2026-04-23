@@ -42,8 +42,20 @@ class HotspotMethod:
 
     @classmethod
     def from_dict(cls, data: dict) -> "HotspotMethod":
-        """Create HotspotMethod from dictionary."""
-        return cls(**data)
+        """Create HotspotMethod from dictionary with explicit field extraction."""
+        return cls(
+            name=str(data.get("name", "")),
+            signature=str(data.get("signature", "")),
+            bytecode_size=int(data.get("bytecode_size", 0)),
+            compilation_count=int(data.get("compilation_count", 0)),
+            cpu_time_ns=int(data.get("cpu_time_ns", 0)),
+            cpu_time_percent=float(data.get("cpu_time_percent", 0.0)),
+            inline_count=int(data.get("inline_count", 0)),
+            deopt_risk=float(data.get("deopt_risk", 0.0)),
+            simd_potential=float(data.get("simd_potential", 0.0)),
+            pattern_type=str(data.get("pattern_type", "unknown")),
+            bytecode_hex=data.get("bytecode_hex"),
+        )
 
 
 @dataclass

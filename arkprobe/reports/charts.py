@@ -6,12 +6,11 @@ to JSON and embedded in the HTML report.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from ..model.schema import WorkloadFeatureVector
 

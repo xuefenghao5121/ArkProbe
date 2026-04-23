@@ -284,7 +284,6 @@ class FeatureExtractor:
         if mem_access:
             pattern_str = mem_access.get("access_pattern")
             if pattern_str:
-                from ..model.enums import AccessPattern
                 pattern_map = {
                     "sequential": AccessPattern.STREAMING,
                     "random": AccessPattern.RANDOM,
@@ -468,6 +467,7 @@ class FeatureExtractor:
         heap_used_mb = 0.0
         heap_max_mb = 0.0
         metaspace_used_mb = 0.0
+        max_pause_ms = 0.0
 
         for event in gc_events:
             event_type = event.get("type", "")
@@ -486,12 +486,16 @@ class FeatureExtractor:
                 full_gc_count += 1
                 duration_ns = props.get("duration", 0)
                 if isinstance(duration_ns, (int, float)):
-                    full_gc_total_ms += duration_ns / 1_000_000
+                    pause_ms = duration_ns / 1_000_000
+                    full_gc_total_ms += pause_ms
+                    max_pause_ms = max(max_pause_ms, pause_ms)
             elif "YoungGC" in event_type or "GCPhaseLevel" in event_type:
                 young_gc_count += 1
                 duration_ns = props.get("duration", 0)
                 if isinstance(duration_ns, (int, float)):
-                    young_gc_total_ms += duration_ns / 1_000_000
+                    pause_ms = duration_ns / 1_000_000
+                    young_gc_total_ms += pause_ms
+                    max_pause_ms = max(max_pause_ms, pause_ms)
             elif "MetaspaceSummary" in event_type:
                 ms_used = props.get("metaspace", {}).get("used", 0)
                 if isinstance(ms_used, (int, float)):
@@ -516,7 +520,7 @@ class FeatureExtractor:
             full_gc_total_ms=round(full_gc_total_ms, 1),
             gc_pause_ratio=round(gc_pause_ratio, 4),
             avg_gc_pause_ms=round(avg_gc_pause_ms, 1),
-            max_gc_pause_ms=round(full_gc_total_ms, 1) if full_gc_count > 0 else round(young_gc_total_ms / max(young_gc_count, 1), 1),
+            max_gc_pause_ms=round(max_pause_ms, 1),
             heap_used_mb=round(heap_used_mb, 1),
             heap_max_mb=round(heap_max_mb, 1),
             heap_usage_ratio=round(heap_usage_ratio, 4),
@@ -584,7 +588,9 @@ class FeatureExtractor:
                 has_thread_stats = True
 
         # Fallback: count ThreadStart events if ThreadStatistics not available
-        if not has_thread_stats:
+        if not has_thread_stats or total_threads == 0:
+            total_threads = 0
+            daemon_threads = 0
             for event in thread_events:
                 event_type = event.get("type", "")
                 if "ThreadStart" in event_type:
@@ -592,13 +598,6 @@ class FeatureExtractor:
                     props = event.get("values", event)
                     if props.get("daemon", False):
                         daemon_threads += 1
-
-        # Fallback: count ThreadStart events if ThreadStatistics not available
-        if total_threads == 0:
-            for event in thread_events:
-                event_type = event.get("type", "")
-                if "ThreadStart" in event_type:
-                    total_threads += 1
 
         safepoint_count = len(safepoint_events) // 2  # begin+end pairs
         safepoint_total_ms = 0.0

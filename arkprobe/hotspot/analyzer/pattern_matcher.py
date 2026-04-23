@@ -300,9 +300,10 @@ class PatternMatcher:
         hex_clean = bytecode_hex.replace("0x", "").replace(" ", "")
         if len(hex_clean) < 4:
             return False
-        # Check byte pairs for array + arithmetic co-occurrence
-        has_array = any(op in hex_clean for op in ARRAY_OPCODES)
-        has_arith = any(op in hex_clean for op in ARITH_OPCODES)
+        # Split into discrete byte tokens for accurate matching
+        bytes_set = set(hex_clean[i:i+2] for i in range(0, len(hex_clean) - 1, 2))
+        has_array = bool(bytes_set & ARRAY_OPCODES)
+        has_arith = bool(bytes_set & ARITH_OPCODES)
         return has_array and has_arith
 
     def estimate_simd_potential(self, method: HotspotMethod) -> float:

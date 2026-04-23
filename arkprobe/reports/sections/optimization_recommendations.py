@@ -181,4 +181,5 @@ def _impact_tag(impact: float) -> str:
 
 
 def _escape_html(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    import html
+    return html.escape(text, quote=True)

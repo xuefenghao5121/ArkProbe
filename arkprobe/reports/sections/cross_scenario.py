@@ -1,6 +1,6 @@
 """Cross-scenario comparison section renderer."""
 from __future__ import annotations
-from typing import Dict, List
+from typing import List
 from ...model.schema import WorkloadFeatureVector
 from ...analysis.comparator import ComparisonReport
 from ..charts import ChartFactory

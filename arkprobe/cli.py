@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import click
 from rich.console import Console
@@ -54,7 +54,7 @@ def cli(ctx, verbose, data_dir):
 def list_scenarios_cmd(do_check, builtin_only):
     """List available scenario configurations."""
     from .deps.checker import check_dependencies
-    from .scenarios.loader import list_scenarios_lightweight, BUILTIN_DIR, load_builtin_scenarios
+    from .scenarios.loader import list_scenarios_lightweight
 
     # Quick lookup for builtin short names
     if builtin_only:
@@ -170,7 +170,7 @@ def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scala
 
     # Handle direct binary path
     if binary_path:
-        from .scenarios.loader import ScenarioConfig, WorkloadConfig, CollectionConfig, PlatformConfig
+        from .scenarios.loader import ScenarioConfig, WorkloadConfig, CollectionConfig
         from .model.enums import ScenarioType
         bin_name = Path(binary_path).stem
         scenarios.append(ScenarioConfig(
@@ -190,7 +190,7 @@ def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scala
 
     # Load scenarios from YAML configs
     else:
-        from .scenarios.loader import load_all_scenarios, load_builtin_scenarios, load_scenario, get_scenario_by_name
+        from .scenarios.loader import load_all_scenarios, load_scenario, get_scenario_by_name
 
         # Resolve --builtin short names to full scenario objects
         builtin_scenarios = []
@@ -278,7 +278,7 @@ def collect(ctx, scenario, builtin, binary_path, duration, skip_ebpf, skip_scala
             force=force,
             skip_jfr=not (jfr or sc.collection.jfr_enabled),
             jfr_duration_sec=sc.collection.jfr_duration_sec,
-            jfr_events=list(jfr_events) if jfr_events else sc.collection.jfr_events,
+            jfr_events=list(jfr_events) if jfr_events else list(sc.collection.jfr_events),
             jvm_pid=jvm_pid,
         )
 
@@ -403,7 +403,7 @@ def analyze(ctx, input_dir, output_dir, kunpeng_model):
         console.print(f"  IPC={fv.compute.ipc:.2f}, L3 MPKI={fv.cache.l3_mpki:.1f}, "
                        f"Branch MPKI={fv.branch.branch_mpki:.1f}")
 
-    console.print(f"\n[bold green]Analysis complete.[/bold green]")
+    console.print("\n[bold green]Analysis complete.[/bold green]")
 
 
 @cli.command()
@@ -632,8 +632,10 @@ def optimize(ctx, feature_vectors):
               help="Preview changes without applying")
 @click.option("--output", "-o", type=click.Path(), default="./tuning_results",
               help="Output directory for results")
+@click.option("--kunpeng-model", type=click.Choice(["920", "930"]),
+              default="920", help="Kunpeng processor model")
 @click.pass_context
-def tune(ctx, scenario, config, duration, baseline, dry_run, output):
+def tune(ctx, scenario, config, duration, baseline, dry_run, output, kunpeng_model):
     """Run workload under different hardware tuning configurations.
 
     Examples:
@@ -651,7 +653,7 @@ def tune(ctx, scenario, config, duration, baseline, dry_run, output):
     from .model.feature_vector import save_feature_vector
     from .scenarios.loader import get_scenario_by_name
     from .workloads.build import resolve_builtin_command
-    from .tuner.hardware_tuner import HardwareTuner, TUNING_PRESETS, TuningConfig
+    from .tuner.hardware_tuner import HardwareTuner, TUNING_PRESETS
     from .tuner.comparator import TuningComparator
 
     data_dir = ctx.obj["data_dir"]
@@ -682,16 +684,16 @@ def tune(ctx, scenario, config, duration, baseline, dry_run, output):
     console.print(f"Duration: {duration}s per config\n")
 
     tuner = HardwareTuner(dry_run=dry_run)
-    extractor = FeatureExtractor()
+    extractor = FeatureExtractor(kunpeng_model)
     results = []
 
     for cfg_name in configs_to_run:
-        config = TUNING_PRESETS[cfg_name]
+        preset = TUNING_PRESETS[cfg_name]
         console.print(f"[cyan]>>> Config: {cfg_name}[/cyan]")
-        console.print(f"    {config.description}")
+        console.print(f"    {preset.description}")
 
         # Apply tuning
-        result = tuner.apply(config)
+        result = tuner.apply(preset)
         if not result.success:
             console.print(f"    [red]Failed to apply config: {result.errors}[/red]")
             continue
@@ -706,12 +708,12 @@ def tune(ctx, scenario, config, duration, baseline, dry_run, output):
             workload_cmd = resolve_builtin_command(workload_cmd)
 
         # Wrap with numactl/taskset if configured
-        wrapped_cmd = tuner.wrap_command(config, workload_cmd.split())
+        wrapped_cmd = tuner.wrap_command(preset, workload_cmd.split())
 
         collection_config = ScenarioCollectionConfig(
             scenario_name=f"{sc.name.lower().replace(' ', '_')}_{cfg_name}",
             workload_command=" ".join(wrapped_cmd),
-            kunpeng_model="920",
+            kunpeng_model=kunpeng_model,
             perf_duration_sec=duration,
             ebpf_duration_sec=0,
             warmup_sec=sc.collection.warmup_sec,
@@ -905,7 +907,6 @@ def simulate(ctx, scenario, config, gem5_path, sim_time, output):
     """
     from .tuner.gem5_tuner import Gem5Tuner, Gem5Config, GEM5_PRESETS
     from .workloads.build import get_workload_binary
-    from pathlib import Path
 
     output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -982,7 +983,7 @@ def simulate(ctx, scenario, config, gem5_path, sim_time, output):
         stats = tuner.simulate(config, binary_path)
 
         if stats.instructions == 0:
-            console.print(f"    [red]Simulation failed or no instructions executed[/red]")
+            console.print("    [red]Simulation failed or no instructions executed[/red]")
             continue
 
         console.print(f"    IPC={stats.ipc:.4f}, Instructions={stats.instructions:,}")

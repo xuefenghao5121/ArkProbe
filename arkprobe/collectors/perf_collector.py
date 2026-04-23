@@ -340,14 +340,41 @@ class PerfCollector(BaseCollector):
             if len(parts) < 3:
                 continue
 
-            raw_value = parts[0].strip()
-            event_raw = parts[2].strip() if len(parts) > 2 else ""
-            # parts[3] = stddev% (skip), parts[4] = time_enabled_ns, parts[5] = pcnt_running
-            time_enabled = parts[4].strip() if len(parts) > 4 else "0"
-            pcnt_running = parts[5].strip() if len(parts) > 5 else "100.00"
+            # Handle large values with commas (e.g., "1,234,567")
+            # perf stat -x , output: value,event,unit,...
+            # value may contain commas as thousand separators, but event names
+            # never contain commas. Strategy: find the first part that looks
+            # like an event name (contains non-numeric chars beyond digits/commas).
+            raw_value_parts = []
+            event_raw = ""
+            remaining_parts = []
+            found_event = False
+            for i, part in enumerate(parts):
+                stripped = part.strip()
+                if not found_event:
+                    # Check if this looks like an event name (not a number)
+                    test = stripped.replace(",", "").replace(".", "").replace("-", "")
+                    if test and not test.isdigit():
+                        found_event = True
+                        event_raw = stripped
+                        remaining_parts = parts[i+1:]
+                    else:
+                        raw_value_parts.append(stripped)
+                else:
+                    remaining_parts = parts[i:]
+                    break
+
+            if not found_event or not raw_value_parts:
+                continue
+
+            raw_value = ",".join(raw_value_parts)
 
             if not event_raw or raw_value in ("<not counted>", "<not supported>", ""):
                 continue
+
+            # Extract time_enabled and pcnt_running from remaining parts
+            time_enabled = remaining_parts[2].strip() if len(remaining_parts) > 2 else "0"
+            pcnt_running = remaining_parts[3].strip() if len(remaining_parts) > 3 else "100.00"
 
             # Normalize event name: "armv8_pmuv3/cpu_cycles/" -> "cpu_cycles"
             event_clean = event_raw.strip()

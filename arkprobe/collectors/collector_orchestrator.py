@@ -296,24 +296,28 @@ class CollectorOrchestrator:
                 repeat=1,
             )
 
-            # Get throughput from workload output
-            from ..utils.process import run_cmd
-            # Security: validate command before shell execution
-            is_safe, error_msg = validate_command_safety(command)
-            if not is_safe:
-                raise ValueError(f"Unsafe command rejected: {error_msg}")
-            wl_result = run_cmd(
-                ["sh", "-c", command],
-                timeout_sec=120,
-            )
-            tp = throughput_parser(wl_result.stdout)
+            # Extract throughput from perf's own workload execution
+            # (perf.stat already ran the command, no need to run it again)
+            tp = throughput_parser(topdown.workload_stdout if hasattr(topdown, 'workload_stdout') else "")
+
+            # If throughput not available from perf, run separately as fallback
+            if tp <= 0:
+                from ..utils.process import run_cmd
+                is_safe, error_msg = validate_command_safety(command)
+                if not is_safe:
+                    raise ValueError(f"Unsafe command rejected: {error_msg}")
+                wl_result = run_cmd(
+                    ["sh", "-c", command],
+                    timeout_sec=120,
+                )
+                tp = throughput_parser(wl_result.stdout)
             throughputs.append(tp)
 
             perf_summaries.append({
                 "core_count": cores,
-                "ipc": topdown.get("instructions", 0) / max(topdown.get("cycles", 1), 1),
-                "frontend_bound": topdown.get("stall_frontend", 0) / max(topdown.get("cycles", 1), 1),
-                "backend_bound": topdown.get("stall_backend", 0) / max(topdown.get("cycles", 1), 1),
+                "ipc": topdown.get("instructions") / max(topdown.get("cycles"), 1),
+                "frontend_bound": topdown.get("stall_frontend") / max(topdown.get("cycles"), 1),
+                "backend_bound": topdown.get("stall_backend") / max(topdown.get("cycles"), 1),
             })
 
         # Compute scaling efficiency

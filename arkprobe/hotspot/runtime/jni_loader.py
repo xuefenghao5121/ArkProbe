@@ -438,69 +438,16 @@ class BenchmarkRunner:
     ) -> BenchmarkResult:
         """Benchmark Java implementation vs C++ implementation.
 
-        Args:
-            method: Hotspot method to benchmark
-            cpp_so_path: Path to compiled C++ shared library
-            iterations: Number of benchmark iterations
-            warmup_iters: Warmup iterations (JIT warmup)
+        NOTE: This method cannot actually invoke arbitrary Java methods
+        from outside the JVM. Use benchmark_external() instead, which runs
+        a real Java subprocess with/without the native library.
 
-        Returns:
-            BenchmarkResult with timing comparison
+        This method raises NotImplementedError to prevent silent misuse.
         """
-        class_name = method.name.rsplit(".", 1)[0]
-        method_name = method.name.rsplit(".", 1)[-1]
-
-        # Load C++ implementation
-        if not self.jni_loader.load_library(cpp_so_path, class_name):
-            log.warning("Failed to load library, running with placeholder benchmark")
-            return BenchmarkResult(
-                java_time_ms=1.0,
-                cpp_time_ms=0.0,
-                speedup=0.0,
-                iterations=iterations,
-                method_name=method.name,
-            )
-
-        # Warmup (trigger JIT compilation)
-        log.info("Warming up JVM (%d iterations)...", warmup_iters)
-        for _ in range(warmup_iters):
-            self._invoke_java_method(method)
-
-        # Benchmark Java baseline
-        log.info("Benchmarking Java baseline (%d iterations)...", iterations)
-        java_times = []
-        for _ in range(iterations):
-            start = time.perf_counter()
-            self._invoke_java_method(method)
-            elapsed = (time.perf_counter() - start) * 1000
-            java_times.append(elapsed)
-
-        java_avg = sum(java_times) / len(java_times)
-
-        # Benchmark C++ implementation
-        log.info("Benchmarking C++ implementation (%d iterations)...", iterations)
-        cpp_times = []
-        for _ in range(iterations):
-            start = time.perf_counter()
-            self._invoke_cpp_method(method)
-            elapsed = (time.perf_counter() - start) * 1000
-            cpp_times.append(elapsed)
-
-        cpp_avg = sum(cpp_times) / len(cpp_times)
-
-        speedup = java_avg / cpp_avg if cpp_avg > 0 else 0.0
-
-        log.info(
-            "Benchmark complete: Java=%.2fms, C++=%.2fms, speedup=%.2fx",
-            java_avg, cpp_avg, speedup,
-        )
-
-        return BenchmarkResult(
-            java_time_ms=java_avg,
-            cpp_time_ms=cpp_avg,
-            speedup=speedup,
-            iterations=iterations,
-            method_name=method.name,
+        raise NotImplementedError(
+            "benchmark_method() cannot invoke arbitrary JVM methods from outside. "
+            "Use benchmark_external() instead, which runs a real Java benchmark "
+            "program with/without -Djava.library.path."
         )
 
     def benchmark_external(

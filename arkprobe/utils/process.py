@@ -55,7 +55,12 @@ def run_shell(
     timeout_sec: int = 300,
     check: bool = False,
 ) -> RunResult:
-    """Run a shell command string."""
+    """Run a shell command string.
+
+    WARNING: Prefer run_cmd() with list-form arguments to avoid shell injection.
+    Only use this when shell features (pipes, redirects) are truly needed.
+    """
+    log.warning("run_shell() called — prefer run_cmd() with list-form args to avoid injection risk")
     log.debug("Running shell: %s", cmd)
     try:
         result = subprocess.run(

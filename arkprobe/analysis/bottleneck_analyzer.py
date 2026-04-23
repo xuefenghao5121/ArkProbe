@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 from ..model.enums import BottleneckCategory
 from ..model.schema import WorkloadFeatureVector
@@ -260,8 +260,8 @@ class BottleneckAnalyzer:
                 )
             else:
                 memory_recs.append(
-                    f"Increasing L3 cache size or associativity could reduce backend stalls. "
-                    f"Estimated benefit: medium-high"
+                    "Increasing L3 cache size or associativity could reduce backend stalls. "
+                    "Estimated benefit: medium-high"
                 )
 
         # L2 cache pressure
@@ -304,7 +304,7 @@ class BottleneckAnalyzer:
 
         # NUMA remote access penalty
         if fv.memory.numa_local_ratio is not None and fv.memory.numa_local_ratio < 0.8:
-            numa_penalty = (1.0 - fv.memory.numa_local_ratio) * 2  # Scale to 0-1
+            numa_penalty = min(1.0, (1.0 - fv.memory.numa_local_ratio) * 2)
             memory_pressure_score = max(memory_pressure_score, numa_penalty)
             memory_indicators.append(
                 f"NUMA local access ratio = {fv.memory.numa_local_ratio:.0%} "
@@ -359,7 +359,7 @@ class BottleneckAnalyzer:
         if core_indicators:
             details.append(BottleneckDetail(
                 category="Backend: Core Bound",
-                score=be * (1 - memory_pressure_score) * ipc_ratio,
+                score=be * max(0, 1 - memory_pressure_score) * ipc_ratio,
                 indicators=core_indicators,
                 recommendations=core_recs,
             ))
@@ -403,6 +403,9 @@ class BottleneckAnalyzer:
 
         if not indicators:
             indicators.append("Bad speculation elevated but root cause unclear")
+            recommendations.append(
+                "Profile with branch trace to identify hot mispredicted branches"
+            )
 
         details.append(BottleneckDetail(
             category="Bad Speculation",

@@ -16,7 +16,7 @@ from jinja2 import Environment, FileSystemLoader
 from ..model.schema import WorkloadFeatureVector
 from ..analysis.bottleneck_analyzer import BottleneckAnalyzer, BottleneckReport
 from ..analysis.comparator import ComparisonReport, WorkloadComparator
-from ..analysis.design_space import DesignSensitivityReport, DesignSpaceExplorer
+from ..analysis.design_space import DesignSpaceExplorer
 from ..analysis.optimization_analyzer import (
     OptimizationAnalyzer,
     OptimizationReport as OptReport,
@@ -41,7 +41,7 @@ class ReportGenerator:
         self.output_dir = output_dir or Path(".")
         self.jinja_env = Environment(
             loader=FileSystemLoader(str(TEMPLATES_DIR)),
-            autoescape=False,  # We generate safe HTML ourselves
+            autoescape=True,
         )
 
     def generate_full_report(
@@ -135,7 +135,7 @@ class ReportGenerator:
             timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             platform=platform,
             scenario_count=len(feature_vectors),
-            version="0.1.0",
+            version="0.3.0",
             executive_summary_html=executive_html,
             scenario_sections_html=scenario_html,
             cross_scenario_html=cross_html,
