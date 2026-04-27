@@ -19,7 +19,7 @@
 #include <x86intrin.h>
 #endif
 
-{%- if pattern_subtype == "array_copy" %}
+{% if pattern_subtype == "array_copy" %}
 /**
  * Vectorized array copy — replaces System.arraycopy / Arrays.copyOf
  * Pattern: memory bandwidth saturation via streaming stores

@@ -182,9 +182,14 @@ class HotspotAccelerator:
                 method, classification, bytecode
             )
             generated.append(output_file)
-            method_cpp_pairs.append((method, classification))
+            # Only include methods with actual C++ implementations in JNI bridge
+            if classification.pattern_type != "unknown":
+                method_cpp_pairs.append((method, classification))
 
-        # Generate JNI bridge
+        if not method_cpp_pairs:
+            return generated
+
+        # Generate JNI bridge (only for classified methods)
         bridge_file = self.codegen.generate_jni_bridge(method_cpp_pairs)
         generated.append(bridge_file)
 

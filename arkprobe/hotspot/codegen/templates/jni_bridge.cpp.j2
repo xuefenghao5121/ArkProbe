@@ -18,16 +18,16 @@
 #include <iostream>
 
 // Forward declarations of generated implementations
-{%- for method in methods %}
+{% for method in methods -%}
 extern "C" JNIEXPORT {{ method.return_type }} JNICALL
-Java_{{ method.mangled_name }}_{{ method.method_name }}(
+{{ method.mangled_name }}(
     JNIEnv* env,
     jobject thiz
     {%- for param in method.params %},
     {{ param.jni_type }} {{ param.name }}
     {%- endfor %}
 );
-{%- endfor %}
+{% endfor %}
 
 /**
  * JNI_OnLoad — called when native library is loaded
@@ -46,13 +46,14 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     }
 
     JNINativeMethod methods[] = {
-        {%- for method in methods %}
+{% for method in methods -%}
         {
             "{{ method.method_name }}",
             "{{ method.signature }}",
-            (void*)Java_{{ method.mangled_name }}_{{ method.method_name }}
+            (void*){{ method.mangled_name }}
         }{% if not loop.last %},{% endif %}
-        {%- endfor %}
+
+{% endfor -%}
     };
 
     jint result = env->RegisterNatives(cls, methods, {{ methods|length }});

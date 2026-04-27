@@ -159,7 +159,7 @@ class CppGenerator:
             method_name = method.name.rsplit(".", 1)[-1]
             params = self._infer_params(method.signature)
             return_type = self._infer_return_type(method.signature)
-            mangled_method = f"{mangled_name}_{method_name}"
+            mangled_method = f"Java_{mangled_name}_{method_name}"
 
             methods_data.append({
                 "method": method,

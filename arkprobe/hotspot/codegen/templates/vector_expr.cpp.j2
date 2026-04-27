@@ -16,7 +16,7 @@
 #include <x86intrin.h>
 #endif
 
-{%- if pattern_subtype == "vector_map" %}
+{% if pattern_subtype == "vector_map" %}
 /**
  * Vectorized map operation — replaces ArrayList.forEach, Stream.map
  * Pattern: element-wise transformation (a[i] = f(b[i]))

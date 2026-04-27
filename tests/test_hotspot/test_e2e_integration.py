@@ -274,10 +274,11 @@ class TestFullPipeline:
         """Complete end-to-end test with all components mocked."""
         methods = [
             HotspotMethod(
-                name="com.example.test.Add",
-                signature="(II)I",
+                name="com.example.FastMath.sigmoid",
+                signature="(D)D",
                 cpu_time_ns=20_000_000,
                 cpu_time_percent=6.0,
+                bytecode_size=25,
             ),
         ]
 

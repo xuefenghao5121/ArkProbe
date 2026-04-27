@@ -15,7 +15,7 @@
 #include <jni.h>
 #include <cmath>
 
-{%- if pattern_subtype == "math_sigmoid" %}
+{% if pattern_subtype == "math_sigmoid" %}
 /**
  * Sigmoid activation: f(x) = 1 / (1 + exp(-x))
  * Optimized with NEON reciprocal approximation
